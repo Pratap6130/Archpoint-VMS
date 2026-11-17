@@ -1,10 +1,7 @@
 package com.example.ui.screens
 
-import android.content.Intent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -13,27 +10,30 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowDropDown
+import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.CloudSync
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.PersonAdd
-import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material.icons.rounded.VerifiedUser
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -45,22 +45,40 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.model.StaffMember
 import com.example.data.model.StaffRole
 import com.example.data.model.VisitReason
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassInnerSurface
+import com.example.ui.components.GlassSegmentedControl
+import com.example.ui.components.StaffAvatar
+import com.example.ui.components.StaffEditorBottomSheet
 import com.example.ui.components.StatusPill
+import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.archPointStatusColors
 import com.example.ui.viewmodel.DeskSnapshot
-import com.example.util.DeskFormatters
+
+private enum class AdminSectionTab {
+  USERS,
+  WORKSPACE,
+}
+
+private enum class StaffAccessFilter(val label: String) {
+  ALL("All"),
+  ADMIN("Admin"),
+  RECEPTION("Reception"),
+  HOST("Host"),
+  UNASSIGNED("No login"),
+}
+
+private sealed interface StaffSheetState {
+  data object AddNew : StaffSheetState
+  data class Edit(val member: StaffMember) : StaffSheetState
+}
 
 @Composable
 fun AdminScreen(
@@ -80,73 +98,432 @@ fun AdminScreen(
     notes: String,
     role: StaffRole,
     hostListed: Boolean,
+    photoUrl: String,
   ) -> Unit,
   onToggleReason: (VisitReason) -> Unit,
   onAddReason: (String) -> Unit,
   onSyncArchPointData: () -> Unit,
 ) {
+  var sheetState by remember { mutableStateOf<StaffSheetState?>(null) }
+  var staffQuery by remember { mutableStateOf("") }
+  var roleFilter by remember { mutableStateOf(StaffAccessFilter.ALL) }
+  var compactTab by remember { mutableStateOf(AdminSectionTab.USERS) }
+
+  val filteredStaff =
+    remember(snapshot.staff, staffQuery, roleFilter) {
+      val q = staffQuery.trim().lowercase()
+      snapshot.staff.filter { member ->
+        val matchesRole =
+          when (roleFilter) {
+            StaffAccessFilter.ALL -> true
+            StaffAccessFilter.ADMIN -> member.parsedRole() == StaffRole.ADMIN
+            StaffAccessFilter.RECEPTION -> member.parsedRole() == StaffRole.RECEPTION
+            StaffAccessFilter.HOST -> member.parsedRole() == StaffRole.HOST
+            StaffAccessFilter.UNASSIGNED -> member.email.isBlank() || !member.activeAccount
+          }
+        val matchesQuery =
+          q.isEmpty() ||
+            member.fullName.lowercase().contains(q) ||
+            member.shownAs.lowercase().contains(q) ||
+            member.designation.lowercase().contains(q) ||
+            member.department.lowercase().contains(q) ||
+            member.email.lowercase().contains(q)
+        matchesRole && matchesQuery
+      }
+    }
+
+  val activeLoginCount =
+    remember(snapshot.staff) {
+      snapshot.staff.count { it.activeAccount && it.email.isNotBlank() }
+    }
+  val adminCount =
+    remember(snapshot.staff) {
+      snapshot.staff.count { it.activeAccount && it.parsedRole() == StaffRole.ADMIN }
+    }
+
+  when (val activeSheet = sheetState) {
+    StaffSheetState.AddNew ->
+      StaffEditorBottomSheet(
+        existingMember = null,
+        isBusy = isBusy,
+        onDismiss = { sheetState = null },
+        onCreateUser = onAddStaff,
+        onSaveUser = onSaveStaff,
+      )
+
+    is StaffSheetState.Edit ->
+      StaffEditorBottomSheet(
+        existingMember = activeSheet.member,
+        isBusy = isBusy,
+        onDismiss = { sheetState = null },
+        onCreateUser = onAddStaff,
+        onSaveUser = onSaveStaff,
+      )
+
+    null -> Unit
+  }
+
   BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
     val isWide = maxWidth >= 860.dp
+
     if (isWide) {
       Row(
-        modifier =
-          Modifier.fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.Top,
       ) {
-        Box(modifier = Modifier.weight(1.1f)) {
-          StaffDirectoryCard(
-            staffList = snapshot.staff,
-            isBusy = isBusy,
-            onSaveStaff = onSaveStaff,
-          )
-        }
-        Column(
-          modifier = Modifier.weight(0.9f),
-          verticalArrangement = Arrangement.spacedBy(16.dp),
+        LazyColumn(
+          modifier = Modifier.weight(1.2f).fillMaxSize(),
+          verticalArrangement = Arrangement.spacedBy(12.dp),
+          contentPadding = PaddingValues(bottom = 24.dp),
         ) {
-          ArchPointSyncCard(
-            snapshot = snapshot,
-            isBusy = isBusy,
-            onSyncArchPointData = onSyncArchPointData,
-          )
-          AddStaffCard(isBusy = isBusy, onAddStaff = onAddStaff)
-          ReasonsToVisitCard(
-            reasons = snapshot.reasons,
-            onToggleReason = onToggleReason,
-            onAddReason = onAddReason,
-          )
+          item(key = "admin_users_header") {
+            AdminUsersHeaderCard(
+              totalUsers = snapshot.staff.size,
+              activeLogins = activeLoginCount,
+              adminCount = adminCount,
+              searchQuery = staffQuery,
+              roleFilter = roleFilter,
+              onSearchChange = { staffQuery = it },
+              onRoleFilterSelect = { roleFilter = it },
+              onAddUserClick = { sheetState = StaffSheetState.AddNew },
+            )
+          }
+          if (filteredStaff.isEmpty()) {
+            item(key = "admin_users_empty") {
+              EmptyStaffFilterCard(hasAnyStaff = snapshot.staff.isNotEmpty())
+            }
+          } else {
+            items(
+              items = filteredStaff,
+              key = { it.id },
+            ) { member ->
+              StaffSummaryRowCard(
+                member = member,
+                onEditClick = { sheetState = StaffSheetState.Edit(member) },
+              )
+            }
+          }
+        }
+
+        LazyColumn(
+          modifier = Modifier.weight(0.85f).fillMaxSize(),
+          verticalArrangement = Arrangement.spacedBy(14.dp),
+          contentPadding = PaddingValues(bottom = 24.dp),
+        ) {
+          item(key = "reasons_card") {
+            ReasonsToVisitCard(
+              reasons = snapshot.reasons,
+              onToggleReason = onToggleReason,
+              onAddReason = onAddReason,
+            )
+          }
+          item(key = "sync_card") {
+            ArchPointSyncCard(
+              snapshot = snapshot,
+              isBusy = isBusy,
+              onSyncArchPointData = onSyncArchPointData,
+            )
+          }
         }
       }
     } else {
-      Column(
-        modifier =
-          Modifier.fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+      LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
       ) {
-        ArchPointSyncCard(
-          snapshot = snapshot,
-          isBusy = isBusy,
-          onSyncArchPointData = onSyncArchPointData,
-        )
-        StaffDirectoryCard(
-          staffList = snapshot.staff,
-          isBusy = isBusy,
-          onSaveStaff = onSaveStaff,
-        )
-        AddStaffCard(isBusy = isBusy, onAddStaff = onAddStaff)
-        ReasonsToVisitCard(
-          reasons = snapshot.reasons,
-          onToggleReason = onToggleReason,
-          onAddReason = onAddReason,
-        )
-        Spacer(Modifier.height(16.dp))
+        item(key = "admin_section_tabs") {
+          GlassSegmentedControl(
+            options =
+              listOf(
+                AdminSectionTab.USERS to "Users (${snapshot.staff.size})",
+                AdminSectionTab.WORKSPACE to "Reasons & Sync",
+              ),
+            selected = compactTab,
+            onSelect = { compactTab = it },
+            tagPrefix = "admin_section",
+          )
+        }
+
+        if (compactTab == AdminSectionTab.USERS) {
+          item(key = "admin_users_header") {
+            AdminUsersHeaderCard(
+              totalUsers = snapshot.staff.size,
+              activeLogins = activeLoginCount,
+              adminCount = adminCount,
+              searchQuery = staffQuery,
+              roleFilter = roleFilter,
+              onSearchChange = { staffQuery = it },
+              onRoleFilterSelect = { roleFilter = it },
+              onAddUserClick = { sheetState = StaffSheetState.AddNew },
+            )
+          }
+
+          if (filteredStaff.isEmpty()) {
+            item(key = "admin_users_empty") {
+              EmptyStaffFilterCard(hasAnyStaff = snapshot.staff.isNotEmpty())
+            }
+          } else {
+            items(
+              items = filteredStaff,
+              key = { it.id },
+            ) { member ->
+              StaffSummaryRowCard(
+                member = member,
+                onEditClick = { sheetState = StaffSheetState.Edit(member) },
+              )
+            }
+          }
+        } else {
+          item(key = "reasons_card") {
+            ReasonsToVisitCard(
+              reasons = snapshot.reasons,
+              onToggleReason = onToggleReason,
+              onAddReason = onAddReason,
+            )
+          }
+          item(key = "sync_card") {
+            ArchPointSyncCard(
+              snapshot = snapshot,
+              isBusy = isBusy,
+              onSyncArchPointData = onSyncArchPointData,
+            )
+          }
+        }
+
+        item(key = "bottom_spacer") {
+          Spacer(Modifier.height(16.dp))
+        }
       }
     }
+  }
+}
+
+@Composable
+private fun AdminUsersHeaderCard(
+  totalUsers: Int,
+  activeLogins: Int,
+  adminCount: Int,
+  searchQuery: String,
+  roleFilter: StaffAccessFilter,
+  onSearchChange: (String) -> Unit,
+  onRoleFilterSelect: (StaffAccessFilter) -> Unit,
+  onAddUserClick: () -> Unit,
+) {
+  GlassCard(contentPadding = PaddingValues(16.dp)) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Column(modifier = Modifier.weight(1f)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Icon(
+            imageVector = Icons.Rounded.Shield,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(Modifier.width(6.dp))
+          Text("Team & Portal Access", style = MaterialTheme.typography.titleLarge)
+        }
+        Text(
+          text = "Only assigned emails can sign in. Each host sees only their own visits and clients.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+      Spacer(Modifier.width(10.dp))
+      Button(
+        onClick = onAddUserClick,
+        shape = RoundedCornerShape(12.dp),
+        colors =
+          ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+          ),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        modifier = Modifier.heightIn(min = 48.dp).testTag("admin_add_user_button"),
+      ) {
+        Icon(Icons.Rounded.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("Add user", style = MaterialTheme.typography.labelLarge)
+      }
+    }
+
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      AdminStatBadge(value = totalUsers.toString(), label = "staff", modifier = Modifier.weight(1f))
+      AdminStatBadge(value = activeLogins.toString(), label = "portal logins", modifier = Modifier.weight(1f))
+      AdminStatBadge(value = adminCount.toString(), label = "admins", modifier = Modifier.weight(1f))
+    }
+
+    OutlinedTextField(
+      value = searchQuery,
+      onValueChange = onSearchChange,
+      placeholder = { Text("Search name or designation...") },
+      leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = "Search staff", modifier = Modifier.size(18.dp)) },
+      trailingIcon = {
+        if (searchQuery.isNotEmpty()) {
+          IconButton(onClick = { onSearchChange("") }) {
+            Icon(Icons.Rounded.Clear, contentDescription = "Clear search", modifier = Modifier.size(18.dp))
+          }
+        }
+      },
+      singleLine = true,
+      modifier = Modifier.fillMaxWidth().testTag("admin_staff_search_input"),
+    )
+
+    Row(
+      modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      StaffAccessFilter.entries.forEach { filter ->
+        FilterChip(
+          selected = roleFilter == filter,
+          onClick = { onRoleFilterSelect(filter) },
+          label = { Text(filter.label) },
+          colors =
+            FilterChipDefaults.filterChipColors(
+              selectedContainerColor = MaterialTheme.colorScheme.primary,
+              selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+            ),
+          modifier = Modifier.testTag("admin_filter_${filter.name.lowercase()}"),
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun AdminStatBadge(
+  value: String,
+  label: String,
+  modifier: Modifier = Modifier,
+) {
+  GlassInnerSurface(modifier = modifier, shape = RoundedCornerShape(12.dp)) {
+    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+      Text(
+        text = value,
+        style = MaterialTheme.typography.titleLarge.copy(fontFamily = JetBrainsMonoFamily),
+        fontWeight = FontWeight.Bold,
+      )
+      Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+  }
+}
+
+@Composable
+private fun StaffSummaryRowCard(
+  member: StaffMember,
+  onEditClick: () -> Unit,
+) {
+  val status = archPointStatusColors()
+  val displayName = member.fullName.ifBlank { member.shownAs }
+  val designationLabel =
+    member.designation.trim().ifBlank { member.parsedRole().label }
+
+  GlassInnerSurface(
+    shape = RoundedCornerShape(16.dp),
+    modifier = Modifier.fillMaxWidth().testTag("admin_staff_row_${member.id}"),
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.weight(1f),
+      ) {
+        StaffAvatar(
+          name = displayName,
+          photoUrl = member.photoUrl,
+          size = 44.dp,
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+          Text(
+            text = displayName,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+          Text(
+            text = designationLabel,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+      }
+
+      Spacer(Modifier.width(8.dp))
+
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        val accessBadgeText =
+          when {
+            !member.activeAccount -> "Off"
+            member.email.isBlank() -> "No login"
+            else -> member.parsedRole().label
+          }
+        val (badgeBg, badgeFg) =
+          when {
+            !member.activeAccount -> status.deniedContainer to status.deniedOnContainer
+            member.email.isBlank() -> status.waitingContainer to status.waitingOnContainer
+            else -> MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.onPrimaryContainer
+          }
+        StatusPill(
+          text = accessBadgeText,
+          containerColor = badgeBg,
+          contentColor = badgeFg,
+        )
+
+        OutlinedButton(
+          onClick = onEditClick,
+          shape = RoundedCornerShape(10.dp),
+          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+          modifier = Modifier.heightIn(min = 48.dp).testTag("edit_staff_button_${member.id}"),
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.Edit,
+            contentDescription = "Edit $displayName",
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(Modifier.width(4.dp))
+          Text("Edit", style = MaterialTheme.typography.labelMedium)
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun EmptyStaffFilterCard(hasAnyStaff: Boolean) {
+  GlassCard(contentPadding = PaddingValues(18.dp)) {
+    Text(
+      text =
+        if (hasAnyStaff) {
+          "No staff members match this search or filter."
+        } else {
+          "No staff members yet. Tap Add user to create your first staff account."
+        },
+      style = MaterialTheme.typography.bodyMedium,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
   }
 }
 
@@ -177,506 +554,12 @@ private fun ArchPointSyncCard(
       onClick = onSyncArchPointData,
       enabled = !isBusy,
       shape = RoundedCornerShape(12.dp),
-      modifier = Modifier.fillMaxWidth().height(46.dp).testTag("sync_archpoint_data_button"),
+      modifier = Modifier.fillMaxWidth().height(48.dp).testTag("sync_archpoint_data_button"),
     ) {
       Icon(Icons.Rounded.CloudSync, contentDescription = null, modifier = Modifier.size(18.dp))
       Spacer(Modifier.width(8.dp))
       Text("Sync ArchPoint Team & Past Visitor Data")
     }
-  }
-}
-
-@Composable
-private fun StaffDirectoryCard(
-  staffList: List<StaffMember>,
-  isBusy: Boolean,
-  onSaveStaff: (StaffMember) -> Unit,
-) {
-  GlassCard {
-    Text("Staff", style = MaterialTheme.typography.titleLarge)
-    Text(
-      "Reception checks visitors in. Hosts get alerts for their own visitors only. Admins manage everything. Assign each colleague's Google email when they join.",
-      style = MaterialTheme.typography.bodySmall,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-
-    staffList.forEach { member ->
-      StaffMemberEditCard(
-        member = member,
-        isBusy = isBusy,
-        onSave = onSaveStaff,
-      )
-    }
-  }
-}
-
-@Composable
-private fun StaffMemberEditCard(
-  member: StaffMember,
-  isBusy: Boolean,
-  onSave: (StaffMember) -> Unit,
-) {
-  val status = archPointStatusColors()
-  var fullName by remember(member.id, member.fullName) { mutableStateOf(member.fullName) }
-  var shownAs by remember(member.id, member.shownAs) { mutableStateOf(member.shownAs) }
-  var email by remember(member.id, member.email) { mutableStateOf(member.email) }
-  var designation by remember(member.id, member.designation) { mutableStateOf(member.designation) }
-  var department by remember(member.id, member.department) { mutableStateOf(member.department) }
-  var floor by remember(member.id, member.floor) { mutableStateOf(member.floor) }
-  var cabin by remember(member.id, member.cabin) { mutableStateOf(member.cabin) }
-  var otherLocation by remember(member.id, member.otherLocation) { mutableStateOf(member.otherLocation) }
-  var requiredThings by remember(member.id, member.requiredThings) { mutableStateOf(member.requiredThings) }
-  var notes by remember(member.id, member.notes) { mutableStateOf(member.notes) }
-  var listOrderStr by remember(member.id, member.listOrder) { mutableStateOf(member.listOrder.toString()) }
-  var role by remember(member.id, member.role) { mutableStateOf(member.parsedRole()) }
-  var hostListed by remember(member.id, member.hostListed) { mutableStateOf(member.hostListed) }
-  var activeAccount by remember(member.id, member.activeAccount) { mutableStateOf(member.activeAccount) }
-
-  GlassInnerSurface(
-    shape = RoundedCornerShape(16.dp),
-    modifier = Modifier.fillMaxWidth(),
-  ) {
-    Column(
-      modifier = Modifier.fillMaxWidth().padding(14.dp),
-      verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-          Box(
-            modifier =
-              Modifier.size(34.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primaryContainer),
-            contentAlignment = Alignment.Center,
-          ) {
-            Text(
-              text = DeskFormatters.initials(member.fullName),
-              style = MaterialTheme.typography.labelMedium,
-              color = MaterialTheme.colorScheme.onPrimaryContainer,
-              fontWeight = FontWeight.Bold,
-            )
-          }
-          Spacer(Modifier.width(10.dp))
-          Column {
-            Text(member.shownAs.ifBlank { member.fullName }, style = MaterialTheme.typography.titleSmall)
-            Text(
-              listOfNotNull(
-                member.designation.takeIf { it.isNotBlank() },
-                member.department.takeIf { it.isNotBlank() },
-              ).joinToString(" · ").ifBlank { member.fullName },
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-        }
-        StatusPill(
-          text = if (activeAccount) "Active" else "Off",
-          containerColor = if (activeAccount) status.freeContainer else status.deniedContainer,
-          contentColor = if (activeAccount) status.freeOnContainer else status.deniedOnContainer,
-        )
-      }
-
-      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-          value = fullName,
-          onValueChange = { fullName = it },
-          label = { Text("Full name") },
-          singleLine = true,
-          modifier = Modifier.weight(1f),
-        )
-        OutlinedTextField(
-          value = shownAs,
-          onValueChange = { shownAs = it },
-          label = { Text("Shown as") },
-          singleLine = true,
-          modifier = Modifier.weight(1f),
-        )
-      }
-
-      OutlinedTextField(
-        value = email,
-        onValueChange = { email = it },
-        label = { Text("Google Email (login access)") },
-        placeholder = { Text("colleague@gmail.com") },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth().testTag("edit_staff_email_${member.id}"),
-      )
-
-      val context = LocalContext.current
-      val loginStatusText =
-        when {
-          !activeAccount -> "Login disabled while switched off"
-          member.email.isBlank() -> "No login email set yet · Appears on Reception only"
-          member.uid.isNotBlank() -> "Google Sign-In linked (${member.email})"
-          else -> "Access ready · Waiting for first Google Sign-In"
-        }
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          modifier = Modifier.weight(1f),
-        ) {
-          Icon(
-            imageVector = Icons.Rounded.VerifiedUser,
-            contentDescription = null,
-            tint =
-              if (member.uid.isNotBlank() && activeAccount) status.freeText
-              else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(15.dp),
-          )
-          Spacer(Modifier.width(6.dp))
-          Text(
-            text = loginStatusText,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-        }
-        if (email.trim().contains("@") && activeAccount) {
-          OutlinedButton(
-            onClick = {
-              val cleanMail = email.trim().lowercase()
-              val msg =
-                "Hi ${shownAs.ifBlank { fullName }}, your ArchPoint Visitors (${role.label}) desk access is ready.\n" +
-                  "Open the ArchPoint Visitors app and tap 'Sign in with Google' using: $cleanMail"
-              val shareIntent =
-                Intent(Intent.ACTION_SEND).apply {
-                  type = "text/plain"
-                  putExtra(Intent.EXTRA_TEXT, msg)
-                }
-              context.startActivity(Intent.createChooser(shareIntent, "Share Login Invite"))
-            },
-            shape = RoundedCornerShape(8.dp),
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-            modifier = Modifier.height(34.dp).testTag("invite_staff_${member.id}"),
-          ) {
-            Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(14.dp))
-            Spacer(Modifier.width(4.dp))
-            Text("Invite", style = MaterialTheme.typography.labelSmall)
-          }
-        }
-      }
-
-      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-          value = designation,
-          onValueChange = { designation = it },
-          label = { Text("Designation") },
-          singleLine = true,
-          modifier = Modifier.weight(1f),
-        )
-        OutlinedTextField(
-          value = department,
-          onValueChange = { department = it },
-          label = { Text("Department") },
-          singleLine = true,
-          modifier = Modifier.weight(1f),
-        )
-      }
-
-      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-          value = floor,
-          onValueChange = { floor = it },
-          label = { Text("Floor") },
-          singleLine = true,
-          modifier = Modifier.weight(0.42f),
-        )
-        OutlinedTextField(
-          value = cabin,
-          onValueChange = { cabin = it },
-          label = { Text("Cabin / room") },
-          singleLine = true,
-          modifier = Modifier.weight(0.58f),
-        )
-      }
-
-      OutlinedTextField(
-        value = otherLocation,
-        onValueChange = { otherLocation = it },
-        label = { Text("Other location (optional)") },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-      )
-
-      OutlinedTextField(
-        value = requiredThings,
-        onValueChange = { requiredThings = it },
-        label = { Text("Required things") },
-        placeholder = { Text("e.g. NDA pad, blueprints, badge") },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth().testTag("edit_staff_required_${member.id}"),
-      )
-
-      OutlinedTextField(
-        value = notes,
-        onValueChange = { notes = it },
-        label = { Text("Notes (optional)") },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-      )
-
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-      ) {
-        RoleSelectorField(
-          selectedRole = role,
-          onRoleSelected = { role = it },
-          modifier = Modifier.weight(1f),
-        )
-        OutlinedTextField(
-          value = listOrderStr,
-          onValueChange = { listOrderStr = it.filter { ch -> ch.isDigit() }.take(4) },
-          label = { Text("Order") },
-          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-          singleLine = true,
-          modifier = Modifier.width(88.dp),
-        )
-      }
-
-      Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          modifier = Modifier.clickable { hostListed = !hostListed },
-        ) {
-          Checkbox(checked = hostListed, onCheckedChange = { hostListed = it })
-          Text("Visitors can ask for them", style = MaterialTheme.typography.bodySmall)
-        }
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          modifier = Modifier.clickable { activeAccount = !activeAccount },
-        ) {
-          Checkbox(checked = activeAccount, onCheckedChange = { activeAccount = it })
-          Text("Active (can sign in & receive visits)", style = MaterialTheme.typography.bodySmall)
-        }
-      }
-
-      OutlinedButton(
-        onClick = {
-          onSave(
-            member.copy(
-              fullName = fullName.trim(),
-              shownAs = shownAs.trim(),
-              email = email.trim().lowercase(),
-              designation = designation.trim(),
-              department = department.trim(),
-              floor = floor.trim(),
-              cabin = cabin.trim(),
-              otherLocation = otherLocation.trim(),
-              requiredThings = requiredThings.trim(),
-              notes = notes.trim(),
-              listOrder = listOrderStr.toLongOrNull() ?: member.listOrder,
-              role = role.wireValue,
-              hostListed = hostListed,
-              activeAccount = activeAccount,
-            )
-          )
-        },
-        enabled = !isBusy && fullName.isNotBlank() && shownAs.isNotBlank(),
-        shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth().height(44.dp).testTag("save_staff_${member.id}"),
-      ) {
-        Text("Save staff changes")
-      }
-    }
-  }
-}
-
-@Composable
-private fun AddStaffCard(
-  isBusy: Boolean,
-  onAddStaff: (
-    fullName: String,
-    shownAs: String,
-    email: String,
-    designation: String,
-    department: String,
-    floor: String,
-    cabin: String,
-    otherLocation: String,
-    requiredThings: String,
-    notes: String,
-    role: StaffRole,
-    hostListed: Boolean,
-  ) -> Unit,
-) {
-  var fullName by remember { mutableStateOf("") }
-  var shownAs by remember { mutableStateOf("") }
-  var email by remember { mutableStateOf("") }
-  var designation by remember { mutableStateOf("") }
-  var department by remember { mutableStateOf("") }
-  var floor by remember { mutableStateOf("") }
-  var cabin by remember { mutableStateOf("") }
-  var otherLocation by remember { mutableStateOf("") }
-  var requiredThings by remember { mutableStateOf("") }
-  var notes by remember { mutableStateOf("") }
-  var role by remember { mutableStateOf(StaffRole.HOST) }
-  var hostListed by remember { mutableStateOf(true) }
-
-  GlassCard {
-    Text("Add a staff member", style = MaterialTheme.typography.titleLarge)
-
-    OutlinedTextField(
-      value = fullName,
-      onValueChange = { fullName = it },
-      label = { Text("Full name") },
-      keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth().testTag("add_staff_name_input"),
-    )
-
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      OutlinedTextField(
-        value = shownAs,
-        onValueChange = { shownAs = it },
-        label = { Text("Shown as") },
-        placeholder = { Text("e.g. Himanshi Gupta") },
-        singleLine = true,
-        modifier = Modifier.weight(1f).testTag("add_staff_shown_input"),
-      )
-      OutlinedTextField(
-        value = floor,
-        onValueChange = { floor = it },
-        label = { Text("Floor") },
-        placeholder = { Text("Ground, 2nd") },
-        singleLine = true,
-        modifier = Modifier.weight(0.75f).testTag("add_staff_floor_input"),
-      )
-    }
-
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      OutlinedTextField(
-        value = designation,
-        onValueChange = { designation = it },
-        label = { Text("Designation") },
-        singleLine = true,
-        modifier = Modifier.weight(1f),
-      )
-      OutlinedTextField(
-        value = department,
-        onValueChange = { department = it },
-        label = { Text("Department") },
-        singleLine = true,
-        modifier = Modifier.weight(1f),
-      )
-    }
-
-    OutlinedTextField(
-      value = cabin,
-      onValueChange = { cabin = it },
-      label = { Text("Cabin / room") },
-      placeholder = { Text("e.g. ArchPoint Wellness cabin") },
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth().testTag("add_staff_cabin_input"),
-    )
-
-    OutlinedTextField(
-      value = otherLocation,
-      onValueChange = { otherLocation = it },
-      label = { Text("Other location (optional)") },
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth(),
-    )
-
-    OutlinedTextField(
-      value = requiredThings,
-      onValueChange = { requiredThings = it },
-      label = { Text("Required things (optional)") },
-      placeholder = { Text("e.g. NDA pad, visitor badge") },
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth().testTag("add_staff_required_input"),
-    )
-
-    OutlinedTextField(
-      value = notes,
-      onValueChange = { notes = it },
-      label = { Text("Notes (optional)") },
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth(),
-    )
-
-    OutlinedTextField(
-      value = email,
-      onValueChange = { email = it },
-      label = { Text("Google Email (optional until assigned)") },
-      placeholder = { Text("colleague@gmail.com") },
-      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth().testTag("add_staff_email_input"),
-    )
-
-    Row(
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-      RoleSelectorField(
-        selectedRole = role,
-        onRoleSelected = { role = it },
-        modifier = Modifier.weight(1f),
-      )
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.weight(1f).clickable { hostListed = !hostListed },
-      ) {
-        Checkbox(checked = hostListed, onCheckedChange = { hostListed = it })
-        Text("Visitors can ask for them", style = MaterialTheme.typography.bodySmall)
-      }
-    }
-
-    Button(
-      onClick = {
-        onAddStaff(
-          fullName,
-          shownAs,
-          email,
-          designation,
-          department,
-          floor,
-          cabin,
-          otherLocation,
-          requiredThings,
-          notes,
-          role,
-          hostListed,
-        )
-        fullName = ""
-        shownAs = ""
-        designation = ""
-        department = ""
-        floor = ""
-        cabin = ""
-        otherLocation = ""
-        requiredThings = ""
-        notes = ""
-        email = ""
-      },
-      enabled = !isBusy && fullName.isNotBlank() && (email.isBlank() || email.contains("@")),
-      colors =
-        ButtonDefaults.buttonColors(
-          containerColor = MaterialTheme.colorScheme.primary,
-          contentColor = MaterialTheme.colorScheme.onPrimary,
-        ),
-      shape = RoundedCornerShape(12.dp),
-      modifier = Modifier.fillMaxWidth().height(50.dp).testTag("add_staff_button"),
-    ) {
-      Icon(Icons.Rounded.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
-      Spacer(Modifier.width(8.dp))
-      Text("Add staff member")
-    }
-
-    Text(
-      "Staff with a Google email can install the app and sign in right away. Without email, they still appear on Reception.",
-      style = MaterialTheme.typography.bodySmall,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
   }
 }
 
@@ -695,6 +578,7 @@ private fun ReasonsToVisitCard(
       Row(
         modifier =
           Modifier.fillMaxWidth()
+            .heightIn(min = 48.dp)
             .clickable { onToggleReason(reason) }
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -745,41 +629,6 @@ private fun ReasonsToVisitCard(
         modifier = Modifier.height(52.dp).testTag("add_reason_button"),
       ) {
         Text("Add")
-      }
-    }
-  }
-}
-
-@Composable
-private fun RoleSelectorField(
-  selectedRole: StaffRole,
-  onRoleSelected: (StaffRole) -> Unit,
-  modifier: Modifier = Modifier,
-) {
-  var expanded by remember { mutableStateOf(false) }
-  Box(modifier = modifier) {
-    OutlinedTextField(
-      value = selectedRole.wireValue,
-      onValueChange = {},
-      readOnly = true,
-      label = { Text("Role") },
-      trailingIcon = { Icon(Icons.Rounded.ArrowDropDown, contentDescription = "Select role") },
-      modifier = Modifier.fillMaxWidth(),
-    )
-    Box(
-      modifier =
-        Modifier.matchParentSize()
-          .clickable { expanded = true }
-    )
-    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-      StaffRole.entries.forEach { role ->
-        DropdownMenuItem(
-          text = { Text("${role.label} (${role.wireValue})") },
-          onClick = {
-            onRoleSelected(role)
-            expanded = false
-          },
-        )
       }
     }
   }

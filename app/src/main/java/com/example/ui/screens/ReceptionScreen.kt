@@ -66,6 +66,8 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import android.net.Uri
+import com.example.data.model.HostAvailability
 import com.example.data.model.Visit
 import com.example.data.model.VisitStatus
 import com.example.data.model.VisitorProfile
@@ -73,11 +75,17 @@ import com.example.ui.components.FreeDotLabel
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassInnerSurface
 import com.example.ui.components.GlassSegmentedControl
+import com.example.ui.components.RecentVisitorsCard
+import com.example.ui.components.RecentVisitorsStripCard
+import com.example.ui.components.StaffAvatar
 import com.example.ui.components.StatusPill
+import com.example.ui.components.VisitorCardScanBanner
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.archPointStatusColors
+import com.example.ui.viewmodel.CardScanState
 import com.example.ui.viewmodel.DeskSnapshot
 import com.example.ui.viewmodel.HostBoardItem
+import com.example.ui.viewmodel.MainViewModel
 import com.example.ui.viewmodel.ReceptionFormState
 import com.example.ui.viewmodel.VisitorSearchState
 import com.example.util.DeskFormatters
@@ -98,11 +106,14 @@ fun ReceptionScreen(
   snapshot: DeskSnapshot,
   form: ReceptionFormState,
   searchState: VisitorSearchState,
+  cardScanState: CardScanState,
   hostBoard: List<HostBoardItem>,
   nowMillis: Long,
   onSearchQueryChanged: (String) -> Unit,
   onTriggerSearch: () -> Unit,
   onClearSearch: () -> Unit,
+  onScanCardUri: (Uri) -> Unit,
+  onClearCardScan: () -> Unit,
   onMobileChanged: (String) -> Unit,
   onNameChanged: (String) -> Unit,
   onCompanyChanged: (String) -> Unit,
@@ -131,6 +142,13 @@ fun ReceptionScreen(
         st == VisitStatus.WAITING || st == VisitStatus.IN_MEETING
       }
     }
+  val recentVisitors =
+    remember(snapshot.visitorProfiles, snapshot.visits) {
+      MainViewModel.buildRecentVisitors(
+        profiles = snapshot.visitorProfiles,
+        visits = snapshot.visits,
+      )
+    }
 
   BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
     val isWide = maxWidth >= 860.dp
@@ -148,10 +166,13 @@ fun ReceptionScreen(
             snapshot = snapshot,
             form = form,
             searchState = searchState,
+            cardScanState = cardScanState,
             hostBoard = hostBoard,
             onSearchQueryChanged = onSearchQueryChanged,
             onTriggerSearch = onTriggerSearch,
             onClearSearch = onClearSearch,
+            onScanCardUri = onScanCardUri,
+            onClearCardScan = onClearCardScan,
             onMobileChanged = onMobileChanged,
             onNameChanged = onNameChanged,
             onCompanyChanged = onCompanyChanged,
@@ -171,6 +192,11 @@ fun ReceptionScreen(
           verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
           WhoIsFreeBoardCard(hostBoard = hostBoard, onMarkDone = onMarkDone)
+          RecentVisitorsCard(
+            visitors = recentVisitors,
+            form = form,
+            onSelectVisitor = onApplySuggestion,
+          )
           TodayAtOfficeCard(
             visits = todaysVisits,
             nowMillis = nowMillis,
@@ -203,14 +229,22 @@ fun ReceptionScreen(
 
         if (activePane == ReceptionPane.CHECK_IN) {
           FreeHostsQuickStrip(hostBoard = hostBoard, onSelectHost = onHostSelected)
+          RecentVisitorsStripCard(
+            visitors = recentVisitors,
+            form = form,
+            onSelectVisitor = onApplySuggestion,
+          )
           VisitorEntryCard(
             snapshot = snapshot,
             form = form,
             searchState = searchState,
+            cardScanState = cardScanState,
             hostBoard = hostBoard,
             onSearchQueryChanged = onSearchQueryChanged,
             onTriggerSearch = onTriggerSearch,
             onClearSearch = onClearSearch,
+            onScanCardUri = onScanCardUri,
+            onClearCardScan = onClearCardScan,
             onMobileChanged = onMobileChanged,
             onNameChanged = onNameChanged,
             onCompanyChanged = onCompanyChanged,
@@ -232,6 +266,14 @@ fun ReceptionScreen(
             onRemind = onRemind,
             onSendIn = onSendIn,
             onMarkDone = onMarkDone,
+          )
+          RecentVisitorsCard(
+            visitors = recentVisitors,
+            form = form,
+            onSelectVisitor = { profile ->
+              onApplySuggestion(profile)
+              activePane = ReceptionPane.CHECK_IN
+            },
           )
         }
         Spacer(Modifier.height(16.dp))
@@ -289,10 +331,13 @@ private fun VisitorEntryCard(
   snapshot: DeskSnapshot,
   form: ReceptionFormState,
   searchState: VisitorSearchState,
+  cardScanState: CardScanState,
   hostBoard: List<HostBoardItem>,
   onSearchQueryChanged: (String) -> Unit,
   onTriggerSearch: () -> Unit,
   onClearSearch: () -> Unit,
+  onScanCardUri: (Uri) -> Unit,
+  onClearCardScan: () -> Unit,
   onMobileChanged: (String) -> Unit,
   onNameChanged: (String) -> Unit,
   onCompanyChanged: (String) -> Unit,
@@ -364,7 +409,13 @@ private fun VisitorEntryCard(
   }
 
   GlassCard {
-    // 1. SEARCH BAR AT THE VERY TOP
+    // 1. VISITOR CARD IMAGE SCAN & RETURNING VISITOR SEARCH
+    VisitorCardScanBanner(
+      scanState = cardScanState,
+      onScanCardUri = onScanCardUri,
+      onClearScan = onClearCardScan,
+    )
+
     OutlinedTextField(
       value = searchState.query,
       onValueChange = onSearchQueryChanged,
@@ -773,12 +824,13 @@ private fun HostSelectTile(
     if (selected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
     else MaterialTheme.colorScheme.onSurfaceVariant
 
+  val hostAvail = item.staff.parsedAvailability()
   val statusText =
     buildString {
       if (item.inMeetingVisit != null) {
         append("In meeting · ${item.meetingMinutes}m")
       } else {
-        append("Free")
+        append(if (hostAvail == HostAvailability.AVAILABLE) "Free" else hostAvail.label)
       }
       if (item.waitingCount > 0) {
         append(" · ${item.waitingCount} waiting")
@@ -800,13 +852,22 @@ private fun HostSelectTile(
       ),
   ) {
     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-      Text(
-        text = item.staff.shownAs.ifBlank { item.staff.fullName },
-        style = MaterialTheme.typography.titleSmall,
-        color = titleColor,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-      )
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        StaffAvatar(
+          name = item.staff.shownAs.ifBlank { item.staff.fullName },
+          photoUrl = item.staff.photoUrl,
+          size = 28.dp,
+          textStyle = MaterialTheme.typography.labelSmall,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+          text = item.staff.shownAs.ifBlank { item.staff.fullName },
+          style = MaterialTheme.typography.titleSmall,
+          color = titleColor,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
       val seatingText = item.staff.formattedSeating().ifBlank { item.staff.cabin }
       if (seatingText.isNotBlank()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -906,7 +967,11 @@ private fun WhoIsFreeBoardCard(
                     Text("Mark done", style = MaterialTheme.typography.labelSmall)
                   }
                 } else {
-                  FreeDotLabel(isFree = true, text = "Free")
+                  val hostAvail = item.staff.parsedAvailability()
+                  FreeDotLabel(
+                    isFree = hostAvail == HostAvailability.AVAILABLE,
+                    text = if (hostAvail == HostAvailability.AVAILABLE) "Free" else hostAvail.label,
+                  )
                   Text(
                     text =
                       if (item.waitingCount > 0) "${item.waitingCount} waiting" else "nobody waiting",

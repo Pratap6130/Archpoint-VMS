@@ -14,13 +14,13 @@ class ArchPointSeedAndFormatterTest {
     assertEquals(11, ArchPointSeedData.teamDirectory.size)
     val himanshi = ArchPointSeedData.teamDirectory.firstOrNull { it.fullName == "Himanshi Gupta" }
     assertTrue(himanshi != null)
-    assertEquals("Ground", himanshi?.floor)
-    assertEquals("ArchPoint Wellness cabin", himanshi?.cabin)
+    assertEquals("Ground Floor", himanshi?.floor)
+    assertEquals("Himanshi Seating", himanshi?.cabin)
     assertTrue(himanshi?.hostListed == true)
 
     val amit = ArchPointSeedData.teamDirectory.first { it.shownAs == "Amit Sir" }
-    assertEquals("2nd floor · Amit cabin", amit.formattedSeating())
-    assertEquals("3rd floor studio (name to confirm)", amit.otherLocation)
+    assertEquals("2nd Floor · Amit Cabin", amit.formattedSeating())
+    assertEquals("Studio (3rd Floor)", amit.otherLocation)
   }
 
   @Test

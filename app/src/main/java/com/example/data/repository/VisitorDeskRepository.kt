@@ -5,6 +5,7 @@ import com.example.R
 import com.example.data.firebase.OperationType
 import com.example.data.firebase.handleFirestoreError
 import com.example.data.model.ArchPointSeedData
+import com.example.data.model.HostAvailability
 import com.example.data.model.Office
 import com.example.data.model.OfficeMembership
 import com.example.data.model.StaffMember
@@ -148,6 +149,48 @@ class VisitorDeskRepository(
     )
   }
 
+  fun observeOwnStaffProfile(
+    officeId: String,
+    staffId: String,
+    userEmail: String,
+  ): Flow<List<StaffMember>> = flow {
+    val uid = requireUserId()
+    val cleanEmail = userEmail.trim().lowercase()
+    if (staffId.isNotBlank()) {
+      val path = "offices/$officeId/staff/$staffId"
+      emitAll(
+        db.collection("offices")
+          .document(officeId)
+          .collection("staff")
+          .document(staffId)
+          .snapshots()
+          .map { snap ->
+            if (snap.exists()) {
+              listOfNotNull(
+                snap.toObject(StaffMember::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+              )
+            } else {
+              emptyList()
+            }
+          }
+          .withFirestoreLogging(OperationType.GET, path, uid)
+      )
+    } else {
+      val path = "offices/$officeId/staff"
+      emitAll(
+        db.collection("offices")
+          .document(officeId)
+          .collection("staff")
+          .whereEqualTo("email", cleanEmail)
+          .snapshots()
+          .map { snap ->
+            snap.toObjects(StaffMember::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+          }
+          .withFirestoreLogging(OperationType.LIST, path, uid)
+      )
+    }
+  }
+
   fun observeReasons(officeId: String, userEmail: String): Flow<List<VisitReason>> = flow {
     val uid = requireUserId()
     val cleanEmail = userEmail.trim().lowercase()
@@ -175,6 +218,28 @@ class VisitorDeskRepository(
         .document(officeId)
         .collection("visits")
         .whereArrayContains("allowedReaderEmails", cleanEmail)
+        .snapshots()
+        .map { snap ->
+          snap.toObjects(Visit::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            .sortedByDescending { it.arrivedAt?.toDate()?.time ?: 0L }
+        }
+        .withFirestoreLogging(OperationType.LIST, path, uid)
+    )
+  }
+
+  /**
+   * Host-only query: fetches strictly visitor notifications associated with [userEmail]
+   * (`hostEmail == cleanEmail`), never fetching global office visitor logs.
+   */
+  fun observeHostVisitorNotifications(officeId: String, userEmail: String): Flow<List<Visit>> = flow {
+    val uid = requireUserId()
+    val cleanEmail = userEmail.trim().lowercase()
+    val path = "offices/$officeId/visits"
+    emitAll(
+      db.collection("offices")
+        .document(officeId)
+        .collection("visits")
+        .whereEqualTo("hostEmail", cleanEmail)
         .snapshots()
         .map { snap ->
           snap.toObjects(Visit::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
@@ -266,6 +331,7 @@ class VisitorDeskRepository(
         "ownerEmail" to email,
         "activeMemberEmails" to listOf(email),
         "receptionAdminEmails" to listOf(email),
+        "receptionEmails" to emptyList<String>(),
         "adminEmails" to listOf(email),
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp(),
@@ -416,7 +482,20 @@ class VisitorDeskRepository(
     queue: BatchQueue,
   ): ImportSummary {
     val officeRef = db.collection("offices").document(office.id)
-    val (activeEmails, receptionAdminEmails, _) = computeOfficeEmailLists(office, currentStaff)
+    val lists = computeOfficeEmailLists(office, currentStaff)
+    val activeEmails = lists.activeEmails
+    val receptionAdminEmails = lists.receptionAdminEmails
+    if (office.receptionEmails != lists.receptionEmails) {
+      queue.enqueue { batch ->
+        batch.update(
+          officeRef,
+          mapOf(
+            "receptionEmails" to lists.receptionEmails,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          ),
+        )
+      }
+    }
 
     val resolvedStaffById = currentStaff.associateBy { it.id }.toMutableMap()
     var staffAdded = 0
@@ -678,6 +757,36 @@ class VisitorDeskRepository(
     }
   }
 
+  suspend fun updateOwnAvailabilityStatus(
+    officeId: String,
+    staffId: String,
+    availability: HostAvailability,
+  ): Result<Unit> {
+    val path = "offices/$officeId/staff/$staffId"
+    return try {
+      val uid = requireUserId()
+      require(officeId.isNotBlank() && staffId.isNotBlank()) { "Staff profile ID is missing." }
+      db.collection("offices")
+        .document(officeId)
+        .collection("staff")
+        .document(staffId)
+        .update(
+          mapOf(
+            "uid" to uid,
+            "availabilityStatus" to availability.wireValue,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
   suspend fun checkInVisitor(
     office: Office,
     mobile: String,
@@ -875,8 +984,13 @@ class VisitorDeskRepository(
     }
   }
 
-  suspend fun askVisitorToWait(officeId: String, visitId: String): Result<Unit> {
+  suspend fun askVisitorToWait(
+    officeId: String,
+    visitId: String,
+    note: String = "asked to wait 10 min",
+  ): Result<Unit> {
     val path = "offices/$officeId/visits/$visitId"
+    val cleanNote = note.trim().take(120).ifBlank { "asked to wait 10 min" }
     return try {
       requireUserId()
       require(officeId.isNotBlank() && visitId.isNotBlank())
@@ -886,7 +1000,7 @@ class VisitorDeskRepository(
         .document(visitId)
         .update(
           mapOf(
-            "waitNote" to "asked to wait 10 min",
+            "waitNote" to cleanNote,
             "updatedAt" to FieldValue.serverTimestamp(),
           )
         )
@@ -900,8 +1014,13 @@ class VisitorDeskRepository(
     }
   }
 
-  suspend fun denyVisitorToday(officeId: String, visitId: String): Result<Unit> {
+  suspend fun denyVisitorToday(
+    officeId: String,
+    visitId: String,
+    reasonNote: String = "can't meet today",
+  ): Result<Unit> {
     val path = "offices/$officeId/visits/$visitId"
+    val cleanNote = reasonNote.trim().take(120).ifBlank { "can't meet today" }
     return try {
       requireUserId()
       require(officeId.isNotBlank() && visitId.isNotBlank())
@@ -912,7 +1031,7 @@ class VisitorDeskRepository(
         .update(
           mapOf(
             "status" to VisitStatus.DENIED.wireValue,
-            "waitNote" to "can't meet today",
+            "waitNote" to cleanNote,
             "endedAt" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp(),
           )
@@ -971,10 +1090,12 @@ class VisitorDeskRepository(
     notes: String,
     role: StaffRole,
     hostListed: Boolean,
+    photoUrl: String = "",
   ): Result<Unit> {
     val cleanName = fullName.trim().take(80)
     val cleanShown = shownAs.trim().take(60).ifBlank { cleanName.split(" ").firstOrNull() ?: "Staff" }
     val cleanEmail = email.trim().lowercase().take(120)
+    val cleanPhotoUrl = photoUrl.trim().take(com.example.util.StaffPhotoCodec.MAX_PHOTO_DATA_URI_CHARS)
     val staffId = "staff_${UUID.randomUUID().toString().replace("-", "").take(12)}"
     val path = "offices/${office.id}/staff/$staffId"
 
@@ -1007,10 +1128,14 @@ class VisitorDeskRepository(
           hostListed = hostListed,
           activeAccount = true,
           uid = "",
+          photoUrl = cleanPhotoUrl,
           officeOwnerUid = office.ownerUid,
         )
       val updatedList = currentStaff + newMember
-      val (activeEmails, receptionAdminEmails, adminEmails) = computeOfficeEmailLists(office, updatedList)
+      val lists = computeOfficeEmailLists(office, updatedList)
+      val activeEmails = lists.activeEmails
+      val receptionAdminEmails = lists.receptionAdminEmails
+      val adminEmails = lists.adminEmails
 
       val queue = BatchQueue(db)
       queue.enqueue { batch ->
@@ -1032,6 +1157,7 @@ class VisitorDeskRepository(
             "hostListed" to hostListed,
             "activeAccount" to true,
             "uid" to "",
+            "photoUrl" to cleanPhotoUrl,
             "officeOwnerUid" to office.ownerUid,
             "allowedReaderEmails" to activeEmails,
             "createdAt" to FieldValue.serverTimestamp(),
@@ -1064,6 +1190,7 @@ class VisitorDeskRepository(
         visits = currentVisits,
         activeEmails = activeEmails,
         receptionAdminEmails = receptionAdminEmails,
+        receptionEmails = lists.receptionEmails,
         adminEmails = adminEmails,
         queue = queue,
       )
@@ -1100,7 +1227,10 @@ class VisitorDeskRepository(
       }
 
       val updatedList = currentStaff.map { if (it.id == edited.id) edited.copy(email = cleanEmail) else it }
-      val (activeEmails, receptionAdminEmails, adminEmails) = computeOfficeEmailLists(office, updatedList)
+      val lists = computeOfficeEmailLists(office, updatedList)
+      val activeEmails = lists.activeEmails
+      val receptionAdminEmails = lists.receptionAdminEmails
+      val adminEmails = lists.adminEmails
       require(adminEmails.isNotEmpty()) { "At least one active admin account must remain enabled." }
 
       val queue = BatchQueue(db)
@@ -1122,6 +1252,7 @@ class VisitorDeskRepository(
             "listOrder" to edited.listOrder.coerceIn(0L, 9999L),
             "hostListed" to edited.hostListed,
             "activeAccount" to edited.activeAccount,
+            "photoUrl" to edited.photoUrl.trim().take(com.example.util.StaffPhotoCodec.MAX_PHOTO_DATA_URI_CHARS),
             "allowedReaderEmails" to activeEmails,
             "updatedAt" to FieldValue.serverTimestamp(),
           ),
@@ -1167,6 +1298,7 @@ class VisitorDeskRepository(
         visits = currentVisits,
         activeEmails = activeEmails,
         receptionAdminEmails = receptionAdminEmails,
+        receptionEmails = lists.receptionEmails,
         adminEmails = adminEmails,
         queue = queue,
       )
@@ -1236,10 +1368,17 @@ class VisitorDeskRepository(
     }
   }
 
+  private data class OfficeEmailLists(
+    val activeEmails: List<String>,
+    val receptionAdminEmails: List<String>,
+    val receptionEmails: List<String>,
+    val adminEmails: List<String>,
+  )
+
   private fun computeOfficeEmailLists(
     office: Office,
     staffList: List<StaffMember>,
-  ): Triple<List<String>, List<String>, List<String>> {
+  ): OfficeEmailLists {
     val activeEmails =
       (staffList.filter { it.activeAccount && it.email.isNotBlank() }.map { it.email.trim().lowercase() } + office.ownerEmail.lowercase())
         .filter { it.isNotBlank() }
@@ -1258,6 +1397,14 @@ class VisitorDeskRepository(
         .distinct()
         .take(100)
 
+    val receptionEmails =
+      staffList
+        .filter { it.activeAccount && it.email.isNotBlank() && it.parsedRole() == StaffRole.RECEPTION }
+        .map { it.email.trim().lowercase() }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .take(100)
+
     val adminEmails =
       (staffList
         .filter { it.activeAccount && it.email.isNotBlank() && it.parsedRole() == StaffRole.ADMIN }
@@ -1266,7 +1413,12 @@ class VisitorDeskRepository(
         .distinct()
         .take(100)
 
-    return Triple(activeEmails, receptionAdminEmails, adminEmails)
+    return OfficeEmailLists(
+      activeEmails = activeEmails,
+      receptionAdminEmails = receptionAdminEmails,
+      receptionEmails = receptionEmails,
+      adminEmails = adminEmails,
+    )
   }
 
   private fun syncOfficeAccessControl(
@@ -1277,6 +1429,7 @@ class VisitorDeskRepository(
     visits: List<Visit>,
     activeEmails: List<String>,
     receptionAdminEmails: List<String>,
+    receptionEmails: List<String>,
     adminEmails: List<String>,
     queue: BatchQueue,
   ) {
@@ -1287,6 +1440,7 @@ class VisitorDeskRepository(
         mapOf(
           "activeMemberEmails" to activeEmails,
           "receptionAdminEmails" to receptionAdminEmails,
+          "receptionEmails" to receptionEmails,
           "adminEmails" to adminEmails,
           "updatedAt" to FieldValue.serverTimestamp(),
         ),
@@ -1326,7 +1480,7 @@ class VisitorDeskRepository(
       }
     }
 
-    visits.take(250).forEach { visit ->
+    visits.forEach { visit ->
       if (visit.id.isNotBlank()) {
         val cleanHostEmail = visit.hostEmail.trim().lowercase()
         val hostActive = cleanHostEmail.isNotBlank() && cleanHostEmail in activeEmails

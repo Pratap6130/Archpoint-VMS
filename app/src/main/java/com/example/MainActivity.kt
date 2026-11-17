@@ -60,9 +60,11 @@ import com.example.alerts.InAppAlertDedupStore
 import com.example.alerts.VisitorAlertManager
 import com.example.alerts.VisitorAlertService
 import com.example.data.firebase.authStateFlow
+import com.example.data.firebase.configureAppCheck
 import com.example.data.firebase.signOutUser
 import com.example.data.model.AppTab
 import com.example.data.model.AppThemeMode
+import com.example.data.model.StaffRole
 import com.example.data.model.VisitStatus
 import com.example.data.preferences.ThemePreferences
 import com.example.data.repository.VisitorDeskRepository
@@ -71,10 +73,11 @@ import com.example.ui.components.ArchPointHeaderBar
 import com.example.ui.components.ArchPointNavRail
 import com.example.ui.components.CompactAlertsPromptBanner
 import com.example.ui.components.GlassBackdrop
+import com.example.ui.components.HostDashboard
+import com.example.ui.screens.AccessNotAssignedScreen
 import com.example.ui.screens.AccountDeactivatedScreen
 import com.example.ui.screens.AdminScreen
 import com.example.ui.screens.AuthScreen
-import com.example.ui.screens.MyVisitorsScreen
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.ReceptionScreen
 import com.example.ui.screens.VisitorLogScreen
@@ -95,6 +98,7 @@ class MainActivity : ComponentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    configureAppCheck(this, intent)
     enableEdgeToEdge(
       statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
       navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
@@ -235,7 +239,9 @@ private fun AuthenticatedDeskHost(
   val selectedTabOverride by viewModel.selectedTab.collectAsStateWithLifecycle()
   val receptionForm by viewModel.receptionForm.collectAsStateWithLifecycle()
   val visitorSearch by viewModel.visitorSearch.collectAsStateWithLifecycle()
+  val cardScanState by viewModel.cardScanState.collectAsStateWithLifecycle()
   val nowMillis by viewModel.nowMillis.collectAsStateWithLifecycle()
+  val inFlightVisitIds by viewModel.inFlightVisitIds.collectAsStateWithLifecycle()
 
   val snackbarHostState = remember { SnackbarHostState() }
 
@@ -275,6 +281,14 @@ private fun AuthenticatedDeskHost(
         onInitialize = { officeName, fullName, shownAs, cabin ->
           viewModel.initializeOfficeWorkspace(officeName, fullName, shownAs, cabin)
         },
+        onSignOut = handleSignOut,
+      )
+    }
+
+    is WorkspaceState.AccessNotAssigned -> {
+      LaunchedEffect(Unit) { VisitorAlertService.stop(context) }
+      AccessNotAssignedScreen(
+        userEmail = state.userEmail,
         onSignOut = handleSignOut,
       )
     }
@@ -455,8 +469,9 @@ private fun AuthenticatedDeskHost(
         }
 
       val hostBoard =
-        remember(snapshot.staff, snapshot.visits, nowMillis) {
-          viewModel.buildHostBoard(snapshot, nowMillis)
+        remember(snapshot.activeRole, snapshot.staff, snapshot.visits, nowMillis) {
+          if (snapshot.activeRole == StaffRole.HOST) emptyList()
+          else viewModel.buildHostBoard(snapshot, nowMillis)
         }
 
       val staffDisplay =
@@ -521,11 +536,21 @@ private fun AuthenticatedDeskHost(
                         snapshot = snapshot,
                         form = receptionForm,
                         searchState = visitorSearch,
+                        cardScanState = cardScanState,
                         hostBoard = hostBoard,
                         nowMillis = nowMillis,
                         onSearchQueryChanged = { viewModel.onVisitorSearchQueryChanged(officeId, it) },
                         onTriggerSearch = { viewModel.triggerVisitorSearch(officeId) },
                         onClearSearch = { viewModel.clearVisitorSearch() },
+                        onScanCardUri = { uri ->
+                          viewModel.scanVisitorCard(
+                            context = context,
+                            imageUri = uri,
+                            profiles = snapshot.visitorProfiles,
+                            hosts = hostBoard.map { item -> item.staff },
+                          )
+                        },
+                        onClearCardScan = { viewModel.clearCardScan() },
                         onMobileChanged = {
                           viewModel.onMobileChanged(
                             input = it,
@@ -559,13 +584,24 @@ private fun AuthenticatedDeskHost(
                       )
 
                     AppTab.MY_VISITORS ->
-                      MyVisitorsScreen(
-                        snapshot = snapshot,
+                      HostDashboard(
+                        currentStaff = snapshot.currentStaff,
+                        visits = snapshot.visits,
                         userEmail = currentUserEmail,
                         nowMillis = nowMillis,
-                        onSendIn = { visit -> viewModel.sendVisitorIn(officeId, visit, "Send in") },
-                        onWait10Min = { visit -> viewModel.askVisitorToWait(officeId, visit) },
-                        onNotToday = { visit -> viewModel.denyVisitorToday(officeId, visit) },
+                        inFlightVisitIds = inFlightVisitIds,
+                        onUpdateAvailability = { availability ->
+                          viewModel.updateOwnAvailabilityStatus(snapshot, availability)
+                        },
+                        onSendIn = { visit, note ->
+                          viewModel.sendVisitorIn(officeId, visit, note)
+                        },
+                        onSendWaitNote = { visit, note ->
+                          viewModel.askVisitorToWait(officeId, visit, note)
+                        },
+                        onNotToday = { visit, reasonNote ->
+                          viewModel.denyVisitorToday(officeId, visit, reasonNote)
+                        },
                         onMeetingDone = { visit -> viewModel.markMeetingDone(officeId, visit) },
                       )
 
@@ -586,7 +622,7 @@ private fun AuthenticatedDeskHost(
                         snapshot = snapshot,
                         isBusy = isBusy,
                         onSaveStaff = { edited -> viewModel.updateStaffMember(snapshot, edited) },
-                        onAddStaff = { fullName, shownAs, email, designation, department, floor, cabin, otherLocation, requiredThings, notes, role, hostListed ->
+                        onAddStaff = { fullName, shownAs, email, designation, department, floor, cabin, otherLocation, requiredThings, notes, role, hostListed, photoUrl ->
                           viewModel.addStaffMember(
                             snapshot = snapshot,
                             fullName = fullName,
@@ -601,6 +637,7 @@ private fun AuthenticatedDeskHost(
                             notes = notes,
                             role = role,
                             hostListed = hostListed,
+                            photoUrl = photoUrl,
                           )
                         },
                         onToggleReason = { reason -> viewModel.toggleReasonShown(officeId, reason) },

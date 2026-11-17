@@ -155,7 +155,7 @@ object VisitorAlertManager {
   fun sendTestAlert(context: Context) {
     ensureChannels(context)
     if (!hasNotificationPermission(context)) return
-    val openIntent = openTabPendingIntent(context, AppTab.RECEPTION, 9001)
+    val openIntent = openTabPendingIntent(context, AppTab.PROFILE, 9001)
     val notification =
       NotificationCompat.Builder(context, CHANNEL_ALERTS)
         .setSmallIcon(R.drawable.ic_stat_archpoint)
@@ -300,7 +300,7 @@ object VisitorAlertManager {
   fun detectVisitAlert(
     officeId: String,
     userEmail: String,
-    isReceptionOrAdmin: Boolean,
+    isReception: Boolean,
     prev: Visit?,
     curr: Visit,
   ): VisitAlertEvent? {
@@ -356,8 +356,8 @@ object VisitorAlertManager {
         )
       }
 
-      // 3. Host replied -> alert reception and admin
-      if (isReceptionOrAdmin) {
+      // 3. Host replied -> alert reception only
+      if (isReception) {
         if (prev.parsedStatus() == VisitStatus.WAITING &&
           curr.parsedStatus() == VisitStatus.IN_MEETING
         ) {
@@ -376,11 +376,11 @@ object VisitorAlertManager {
             notifTitle = title,
             notifBody = "Meeting started",
           )
-        } else if (curr.parsedStatus() == VisitStatus.WAITING &&
+        } else if ((curr.parsedStatus() == VisitStatus.WAITING || curr.parsedStatus() == VisitStatus.IN_MEETING) &&
           curr.waitNote != prev.waitNote &&
           curr.waitNote.isNotBlank()
         ) {
-          val title = "${curr.hostShownAs}: please wait 10 minutes"
+          val title = "${curr.hostShownAs}: ${curr.waitNote}"
           val body = "${curr.visitorName} · ${curr.reason}"
           return VisitAlertEvent(
             key = "wait_note_${curr.id}_${curr.waitNote}",
@@ -404,13 +404,13 @@ object VisitorAlertManager {
             officeId = officeId,
             visit = curr,
             waitMinutes = waitMin,
-            snackbarMessage = title,
+            snackbarMessage = if (curr.waitNote.isNotBlank()) "$title (${curr.waitNote})" else title,
             actionLabel = "Reception",
             targetTab = AppTab.RECEPTION,
             isHostAlert = false,
             isReminder = false,
             notifTitle = title,
-            notifBody = "Marked Denied",
+            notifBody = curr.waitNote.ifBlank { "Marked Denied" },
           )
         } else if (prev.parsedStatus() == VisitStatus.IN_MEETING &&
           curr.parsedStatus() == VisitStatus.DONE
@@ -460,7 +460,7 @@ object VisitorAlertManager {
     context: Context,
     officeId: String,
     userEmail: String,
-    isReceptionOrAdmin: Boolean,
+    isReception: Boolean,
     prev: Visit?,
     curr: Visit,
   ): VisitAlertEvent? {
@@ -468,7 +468,7 @@ object VisitorAlertManager {
       detectVisitAlert(
         officeId = officeId,
         userEmail = userEmail,
-        isReceptionOrAdmin = isReceptionOrAdmin,
+        isReception = isReception,
         prev = prev,
         curr = curr,
       ) ?: return null

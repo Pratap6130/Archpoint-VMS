@@ -26,6 +26,7 @@ import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Save
@@ -49,17 +50,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.model.AppThemeMode
+import com.example.data.model.ArchPointSeedData
 import com.example.data.model.StaffMember
+import com.example.data.model.StaffRole
 import com.example.data.model.VisitStatus
 import com.example.ui.components.FreeDotLabel
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassInnerSurface
 import com.example.ui.components.GlassSegmentedControl
+import com.example.ui.components.LocationPresetScrollBar
+import com.example.ui.components.StaffAvatar
 import com.example.ui.components.StatusPill
+import com.example.ui.components.matchesLocationText
+import com.example.ui.components.matchesSeating
 import com.example.ui.theme.archPointStatusColors
 import com.example.ui.viewmodel.DeskSnapshot
 import com.example.util.DeskFormatters
@@ -125,7 +133,11 @@ fun ProfileScreen(
           )
         }
         Box(modifier = Modifier.weight(1.05f)) {
-          MembersDirectoryCard(snapshot = snapshot)
+          if (snapshot.activeRole == StaffRole.HOST) {
+            HostAccessBoundaryCard(member = currentMember)
+          } else {
+            MembersDirectoryCard(snapshot = snapshot)
+          }
         }
       }
     } else {
@@ -154,7 +166,11 @@ fun ProfileScreen(
           onSendTestAlert = onSendTestAlert,
           onSignOut = onSignOut,
         )
-        MembersDirectoryCard(snapshot = snapshot)
+        if (snapshot.activeRole == StaffRole.HOST) {
+          HostAccessBoundaryCard(member = currentMember)
+        } else {
+          MembersDirectoryCard(snapshot = snapshot)
+        }
         Spacer(Modifier.height(16.dp))
       }
     }
@@ -202,20 +218,12 @@ private fun MyProfileSeatingCard(
       horizontalArrangement = Arrangement.SpaceBetween,
     ) {
       Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-        Box(
-          modifier =
-            Modifier.size(48.dp)
-              .clip(CircleShape)
-              .background(MaterialTheme.colorScheme.primaryContainer),
-          contentAlignment = Alignment.Center,
-        ) {
-          Text(
-            text = DeskFormatters.initials(displayName),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
-            fontWeight = FontWeight.Bold,
-          )
-        }
+        StaffAvatar(
+          name = displayName,
+          photoUrl = member?.photoUrl.orEmpty(),
+          size = 50.dp,
+          textStyle = MaterialTheme.typography.titleMedium,
+        )
         Spacer(Modifier.width(12.dp))
         Column {
           Text(displayName, style = MaterialTheme.typography.titleLarge)
@@ -261,44 +269,110 @@ private fun MyProfileSeatingCard(
 
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-    Text(
-      "My seating & required items",
-      style = MaterialTheme.typography.titleSmall,
-    )
-
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      OutlinedTextField(
-        value = floor,
-        onValueChange = { floor = it },
-        label = { Text("Floor") },
-        placeholder = { Text("Ground, 2nd") },
-        singleLine = true,
-        modifier = Modifier.weight(0.42f).testTag("my_floor_input"),
-      )
-      OutlinedTextField(
-        value = cabin,
-        onValueChange = { cabin = it },
-        label = { Text("Cabin / room") },
-        placeholder = { Text("e.g. Amit cabin") },
-        leadingIcon = {
-          Icon(Icons.Rounded.Chair, contentDescription = null, modifier = Modifier.size(18.dp))
-        },
-        singleLine = true,
-        modifier = Modifier.weight(0.58f).testTag("my_seating_input"),
-      )
+    var showCustomSeating by remember(member?.id) {
+      val hasCustomPrimary =
+        (member?.cabin.orEmpty().isNotBlank() || member?.floor.orEmpty().isNotBlank()) &&
+          ArchPointSeedData.locationPresets.none {
+            it.matchesSeating(member?.floor.orEmpty(), member?.cabin.orEmpty())
+          }
+      val hasCustomAlt =
+        member?.otherLocation.orEmpty().isNotBlank() &&
+          ArchPointSeedData.locationPresets.none {
+            it.matchesLocationText(member?.otherLocation.orEmpty())
+          }
+      mutableStateOf(hasCustomPrimary || hasCustomAlt)
     }
 
-    OutlinedTextField(
-      value = otherLocation,
-      onValueChange = { otherLocation = it },
-      label = { Text("Other / studio location (optional)") },
-      placeholder = { Text("e.g. 3rd floor studio, Board room") },
-      leadingIcon = {
-        Icon(Icons.Rounded.LocationOn, contentDescription = null, modifier = Modifier.size(18.dp))
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Text(
+        "My seating & required items",
+        style = MaterialTheme.typography.titleSmall,
+      )
+      TextButton(
+        onClick = { showCustomSeating = !showCustomSeating },
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+        modifier = Modifier.heightIn(min = 36.dp).testTag("my_custom_seating_toggle"),
+      ) {
+        Text(
+          text = if (showCustomSeating) "Hide custom text" else "Custom text",
+          style = MaterialTheme.typography.labelSmall,
+        )
+      }
+    }
+
+    val selectedPrimaryPresetId =
+      remember(floor, cabin) {
+        ArchPointSeedData.locationPresets.firstOrNull { it.matchesSeating(floor, cabin) }?.id
+      }
+    LocationPresetScrollBar(
+      title = "My primary seating (scroll & tap)",
+      selectedPresetId = selectedPrimaryPresetId,
+      onSelectPreset = { preset ->
+        floor = preset.floor
+        cabin = preset.cabin
       },
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth().testTag("my_other_location_input"),
+      onClearSelection = {
+        floor = ""
+        cabin = ""
+      },
+      tagPrefix = "my_primary_loc",
     )
+
+    val selectedAltPresetId =
+      remember(otherLocation) {
+        ArchPointSeedData.locationPresets.firstOrNull { it.matchesLocationText(otherLocation) }?.id
+      }
+    LocationPresetScrollBar(
+      title = "Alternate / meeting room (optional)",
+      selectedPresetId = selectedAltPresetId,
+      onSelectPreset = { preset ->
+        otherLocation = preset.chipText
+      },
+      onClearSelection = {
+        otherLocation = ""
+      },
+      tagPrefix = "my_alt_loc",
+    )
+
+    if (showCustomSeating) {
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+          value = floor,
+          onValueChange = { floor = it },
+          label = { Text("Floor") },
+          placeholder = { Text("Ground Floor, 2nd Floor") },
+          singleLine = true,
+          modifier = Modifier.weight(0.42f).testTag("my_floor_input"),
+        )
+        OutlinedTextField(
+          value = cabin,
+          onValueChange = { cabin = it },
+          label = { Text("Cabin / room") },
+          placeholder = { Text("e.g. Amit Cabin") },
+          leadingIcon = {
+            Icon(Icons.Rounded.Chair, contentDescription = null, modifier = Modifier.size(18.dp))
+          },
+          singleLine = true,
+          modifier = Modifier.weight(0.58f).testTag("my_seating_input"),
+        )
+      }
+
+      OutlinedTextField(
+        value = otherLocation,
+        onValueChange = { otherLocation = it },
+        label = { Text("Other / studio location (optional)") },
+        placeholder = { Text("e.g. Studio (3rd Floor)") },
+        leadingIcon = {
+          Icon(Icons.Rounded.LocationOn, contentDescription = null, modifier = Modifier.size(18.dp))
+        },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth().testTag("my_other_location_input"),
+      )
+    }
 
     OutlinedTextField(
       value = requiredThings,
@@ -505,11 +579,42 @@ private fun AppearanceAndAlertsCard(
 }
 
 @Composable
+private fun HostAccessBoundaryCard(member: StaffMember?) {
+  GlassCard(modifier = Modifier.testTag("host_access_boundary_card")) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Icon(
+        imageVector = Icons.Rounded.Lock,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.size(20.dp),
+      )
+      Spacer(Modifier.width(8.dp))
+      Text("Host Access & Privacy", style = MaterialTheme.typography.titleMedium)
+    }
+    Text(
+      text =
+        "Your account is signed in with Host permissions (${member?.shownAs ?: "Host"}). You can manage your own availability status, seating, alert settings, and visitor notifications in My desk.",
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    GlassInnerSurface(modifier = Modifier.fillMaxWidth()) {
+      Text(
+        text = "Restricted: Global visitor logs, other hosts' visitor queues, Reception desk controls, and Admin settings are disabled for Host accounts.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(12.dp),
+      )
+    }
+  }
+}
+
+@Composable
 private fun MembersDirectoryCard(snapshot: DeskSnapshot) {
   var query by remember { mutableStateOf("") }
   val status = archPointStatusColors()
+  val isAdminViewer = snapshot.activeRole == StaffRole.ADMIN
   val filteredStaff =
-    remember(snapshot.staff, query) {
+    remember(snapshot.staff, query, isAdminViewer) {
       val q = query.trim().lowercase()
       if (q.isEmpty()) {
         snapshot.staff
@@ -524,7 +629,7 @@ private fun MembersDirectoryCard(snapshot: DeskSnapshot) {
             it.otherLocation.lowercase().contains(q) ||
             it.requiredThings.lowercase().contains(q) ||
             it.notes.lowercase().contains(q) ||
-            it.email.lowercase().contains(q)
+            (isAdminViewer && it.email.lowercase().contains(q))
         }
       }
     }
@@ -576,20 +681,12 @@ private fun MembersDirectoryCard(snapshot: DeskSnapshot) {
               horizontalArrangement = Arrangement.SpaceBetween,
             ) {
               Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                Box(
-                  modifier =
-                    Modifier.size(36.dp)
-                      .clip(CircleShape)
-                      .background(MaterialTheme.colorScheme.primaryContainer),
-                  contentAlignment = Alignment.Center,
-                ) {
-                  Text(
-                    text = DeskFormatters.initials(member.fullName),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    fontWeight = FontWeight.Bold,
-                  )
-                }
+                StaffAvatar(
+                  name = member.fullName,
+                  photoUrl = member.photoUrl,
+                  size = 38.dp,
+                  textStyle = MaterialTheme.typography.labelMedium,
+                )
                 Spacer(Modifier.width(10.dp))
                 Column {
                   Text(
@@ -700,15 +797,17 @@ private fun MembersDirectoryCard(snapshot: DeskSnapshot) {
               }
             }
 
-            Text(
-              text = member.email.ifBlank { "Google login email not assigned yet (add in Admin)" },
-              style = MaterialTheme.typography.labelSmall,
-              color =
-                if (member.email.isNotBlank()) MaterialTheme.colorScheme.onSurfaceVariant
-                else status.warningAccent,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
+            if (isAdminViewer) {
+              Text(
+                text = member.email.ifBlank { "Google login email not assigned yet (add in Admin)" },
+                style = MaterialTheme.typography.labelSmall,
+                color =
+                  if (member.email.isNotBlank()) MaterialTheme.colorScheme.onSurfaceVariant
+                  else status.warningAccent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+            }
           }
         }
       }

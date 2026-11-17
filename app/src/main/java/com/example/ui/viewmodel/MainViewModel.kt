@@ -1,12 +1,19 @@
 package com.example.ui.viewmodel
 
+import android.content.Context
+import android.net.Uri
 import android.util.Log
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.alerts.InAppAlertDedupStore
 import com.example.alerts.VisitAlertEvent
 import com.example.alerts.VisitorAlertManager
+import com.example.data.ai.ScannedVisitorCard
+import com.example.data.ai.VisitorCardScanner
 import com.example.data.model.AppTab
+import com.example.data.model.HostAvailability
 import com.example.data.model.Office
 import com.example.data.model.OfficeMembership
 import com.example.data.model.StaffMember
@@ -47,6 +54,21 @@ data class HostBoardItem(
   val meetingMinutes: Long,
 )
 
+data class HostClientSummary(
+  val key: String,
+  val name: String,
+  val company: String,
+  val mobile: String,
+  val email: String,
+  val jobProfile: String,
+  val visitCount: Int,
+  val completedCount: Int,
+  val lastVisitedAtMillis: Long,
+  val lastReason: String,
+  val lastRemark: String,
+  val lastStatus: VisitStatus,
+)
+
 data class ReceptionFormState(
   val mobile: String = "",
   val name: String = "",
@@ -80,9 +102,17 @@ data class DeskSnapshot(
   val isDeactivated: Boolean,
 )
 
+sealed interface CardScanState {
+  data object Idle : CardScanState
+  data class Scanning(val preview: ImageBitmap?) : CardScanState
+  data class Success(val card: ScannedVisitorCard, val preview: ImageBitmap?) : CardScanState
+  data class Error(val message: String, val preview: ImageBitmap?) : CardScanState
+}
+
 sealed interface WorkspaceState {
   data object Loading : WorkspaceState
   data object NeedsSetup : WorkspaceState
+  data class AccessNotAssigned(val userEmail: String) : WorkspaceState
   data class Deactivated(val officeName: String) : WorkspaceState
   data class Ready(val snapshot: DeskSnapshot) : WorkspaceState
   data class Error(val message: String) : WorkspaceState
@@ -95,6 +125,7 @@ class MainViewModel(
   val currentUserId: String,
   val currentUserEmail: String,
   val currentUserDisplayName: String,
+  private val cardScanner: VisitorCardScanner = VisitorCardScanner(),
 ) : ViewModel() {
 
   private val normalizedEmail = currentUserEmail.trim().lowercase()
@@ -111,13 +142,22 @@ class MainViewModel(
   private val _visitorSearch = MutableStateFlow(VisitorSearchState())
   val visitorSearch: StateFlow<VisitorSearchState> = _visitorSearch.asStateFlow()
 
+  private val _cardScanState = MutableStateFlow<CardScanState>(CardScanState.Idle)
+  val cardScanState: StateFlow<CardScanState> = _cardScanState.asStateFlow()
+
   private var visitorSearchJob: Job? = null
+  private var cardScanJob: Job? = null
 
   private val _isSettingUpWorkspace = MutableStateFlow(false)
   val isSettingUpWorkspace: StateFlow<Boolean> = _isSettingUpWorkspace.asStateFlow()
 
   private val _isBusy = MutableStateFlow(false)
   val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
+
+  private val _pendingAvailability = MutableStateFlow<HostAvailability?>(null)
+  private val _pendingVisitOverrides = MutableStateFlow<Map<String, Visit>>(emptyMap())
+  private val _inFlightVisitIds = MutableStateFlow<Set<String>>(emptySet())
+  val inFlightVisitIds: StateFlow<Set<String>> = _inFlightVisitIds.asStateFlow()
 
   private val _feedback = MutableSharedFlow<String>(extraBufferCapacity = 16)
   val feedback = _feedback.asSharedFlow()
@@ -132,7 +172,7 @@ class MainViewModel(
   init {
     viewModelScope.launch {
       while (isActive) {
-        delay(20_000L)
+        delay(10_000L)
         _nowMillis.value = System.currentTimeMillis()
       }
     }
@@ -164,7 +204,11 @@ class MainViewModel(
               membershipState.data.firstOrNull { it.activeAccount }
                 ?: membershipState.data.firstOrNull()
             if (activeMembership == null) {
-              flowOf(WorkspaceState.NeedsSetup)
+              if (isBootstrapAdminEmail(normalizedEmail)) {
+                flowOf(WorkspaceState.NeedsSetup)
+              } else {
+                flowOf(WorkspaceState.AccessNotAssigned(normalizedEmail))
+              }
             } else if (!activeMembership.activeAccount) {
               flowOf(WorkspaceState.Deactivated(activeMembership.officeName))
             } else {
@@ -179,15 +223,43 @@ class MainViewModel(
         initialValue = WorkspaceState.Loading,
       )
 
+  private data class CoreStates(
+    val officeSt: UiState<Office?>,
+    val staffSt: UiState<List<StaffMember>>,
+    val reasonsSt: UiState<List<VisitReason>>,
+    val visitsSt: UiState<List<Visit>>,
+    val profilesSt: UiState<List<VisitorProfile>>,
+  )
+
   private fun observeWorkspaceSnapshot(membership: OfficeMembership): Flow<WorkspaceState> {
     val officeId = membership.officeId
     val role = membership.parsedRole()
+    val isHostOnly = role == StaffRole.HOST
     val isReceptionOrAdmin = role == StaffRole.ADMIN || role == StaffRole.RECEPTION
 
     val officeFlow = repository.observeOffice(officeId).unwrapToUiState("office")
-    val staffFlow = repository.observeStaff(officeId, normalizedEmail).unwrapToUiState("staff")
-    val reasonsFlow = repository.observeReasons(officeId, normalizedEmail).unwrapToUiState("reasons")
-    val visitsFlow = repository.observeVisits(officeId, normalizedEmail).unwrapToUiState("visits")
+    val staffFlow =
+      if (isHostOnly) {
+        repository
+          .observeOwnStaffProfile(officeId, membership.staffId, normalizedEmail)
+          .unwrapToUiState("host profile")
+      } else {
+        repository.observeStaff(officeId, normalizedEmail).unwrapToUiState("staff")
+      }
+    val reasonsFlow =
+      if (isHostOnly) {
+        flowOf(UiState.Success(emptyList()))
+      } else {
+        repository.observeReasons(officeId, normalizedEmail).unwrapToUiState("reasons")
+      }
+    val visitsFlow =
+      if (isHostOnly) {
+        repository
+          .observeHostVisitorNotifications(officeId, normalizedEmail)
+          .unwrapToUiState("host visitor notifications")
+      } else {
+        repository.observeVisits(officeId, normalizedEmail).unwrapToUiState("visits")
+      }
     val profilesFlow =
       if (isReceptionOrAdmin) {
         repository.observeVisitorProfiles(officeId, normalizedEmail).unwrapToUiState("visitor profiles")
@@ -195,13 +267,27 @@ class MainViewModel(
         flowOf(UiState.Success(emptyList()))
       }
 
+    val coreFlow =
+      combine(
+        officeFlow,
+        staffFlow,
+        reasonsFlow,
+        visitsFlow,
+        profilesFlow,
+      ) { officeSt, staffSt, reasonsSt, visitsSt, profilesSt ->
+        CoreStates(officeSt, staffSt, reasonsSt, visitsSt, profilesSt)
+      }
+
     return combine(
-      officeFlow,
-      staffFlow,
-      reasonsFlow,
-      visitsFlow,
-      profilesFlow,
-    ) { officeSt, staffSt, reasonsSt, visitsSt, profilesSt ->
+      coreFlow,
+      _pendingAvailability,
+      _pendingVisitOverrides,
+    ) { core, pendingAvail, pendingVisits ->
+      val officeSt = core.officeSt
+      val staffSt = core.staffSt
+      val reasonsSt = core.reasonsSt
+      val visitsSt = core.visitsSt
+      val profilesSt = core.profilesSt
       val firstError =
         listOf(officeSt, staffSt, reasonsSt, visitsSt, profilesSt)
           .filterIsInstance<UiState.Error>()
@@ -220,12 +306,38 @@ class MainViewModel(
       }
 
       val office = (officeSt as UiState.Success).data
-      val staff = (staffSt as UiState.Success).data
+      val rawStaff = (staffSt as UiState.Success).data
       val reasons = (reasonsSt as UiState.Success).data
-      val visits = (visitsSt as UiState.Success).data
+      val rawVisits = (visitsSt as UiState.Success).data
       val profiles = (profilesSt as UiState.Success).data
 
+      val staff =
+        if (pendingAvail != null) {
+          rawStaff.map { member ->
+            if (member.email.equals(normalizedEmail, ignoreCase = true)) {
+              member.copy(availabilityStatus = pendingAvail.wireValue)
+            } else {
+              member
+            }
+          }
+        } else {
+          rawStaff
+        }
+
+      val mergedVisits =
+        if (pendingVisits.isEmpty()) {
+          rawVisits
+        } else {
+          rawVisits.map { visit -> pendingVisits[visit.id] ?: visit }
+        }
+
       val me = staff.firstOrNull { it.email.equals(normalizedEmail, ignoreCase = true) }
+      val isOfficeOwner =
+        !office?.ownerEmail.isNullOrBlank() &&
+          normalizedEmail.equals(office?.ownerEmail, ignoreCase = true)
+      if (me == null && !isOfficeOwner) {
+        return@combine WorkspaceState.AccessNotAssigned(normalizedEmail)
+      }
       if (me != null && !me.activeAccount) {
         return@combine WorkspaceState.Deactivated(office?.name ?: membership.officeName)
       }
@@ -234,20 +346,30 @@ class MainViewModel(
       }
 
       val resolvedRole = me?.parsedRole() ?: role
-      val isReceptionOrAdminRole = resolvedRole == StaffRole.ADMIN || resolvedRole == StaffRole.RECEPTION
-      val currentVisitsMap = visits.associateBy { it.id }
+      val isReceptionRole = resolvedRole == StaffRole.RECEPTION
+      val scopedVisits =
+        if (resolvedRole == StaffRole.HOST) {
+          filterHostSpecificVisits(
+            visits = mergedVisits,
+            userEmail = normalizedEmail,
+            staffId = me?.id,
+          )
+        } else {
+          mergedVisits
+        }
+      val currentVisitsMap = rawVisits.associateBy { it.id }
       if (lastObservedOfficeId != officeId) {
         lastObservedOfficeId = officeId
         lastVisitsById = currentVisitsMap
       } else {
         val prevMap = lastVisitsById
         if (prevMap != null) {
-          visits.forEach { visit ->
+          rawVisits.forEach { visit ->
             val event =
               VisitorAlertManager.detectVisitAlert(
                 officeId = officeId,
                 userEmail = normalizedEmail,
-                isReceptionOrAdmin = isReceptionOrAdminRole,
+                isReception = isReceptionRole,
                 prev = prevMap[visit.id],
                 curr = visit,
               )
@@ -264,18 +386,20 @@ class MainViewModel(
           office = office,
           staff = staff,
           reasons = reasons,
-          visits = visits,
-          visitorProfiles = profiles,
+          visits = scopedVisits,
+          visitorProfiles = if (resolvedRole == StaffRole.HOST) emptyList() else profiles,
           currentStaff = me,
           activeRole = resolvedRole,
           isDeactivated = false,
         )
 
-      // One-time auto-seed for existing Admin workspaces missing new staff (e.g. Himanshi Gupta) or past 43 visits
+      // One-time auto-seed / access-field sync for existing Admin workspaces
       if (resolvedRole == StaffRole.ADMIN && office != null && autoSeedCheckedOffices.add(officeId)) {
         val missingSeed =
           staff.none { it.id == "staff_archpoint_11" } ||
-            visits.none { it.id.startsWith("visit_past_") }
+            rawVisits.none { it.id.startsWith("visit_past_") } ||
+            (staff.any { it.activeAccount && it.email.isNotBlank() && it.parsedRole() == StaffRole.RECEPTION } &&
+              office.receptionEmails.isEmpty())
         if (missingSeed) {
           viewModelScope.launch {
             if (!preferences.hasAttemptedDefaultSeed("v2_$officeId")) {
@@ -285,7 +409,7 @@ class MainViewModel(
                 currentStaff = staff,
                 currentReasons = reasons,
                 currentProfiles = profiles,
-                currentVisits = visits,
+                currentVisits = rawVisits,
               ).onSuccess { summary ->
                 if (summary.totalAdded > 0) {
                   _feedback.tryEmit(
@@ -321,28 +445,11 @@ class MainViewModel(
     _selectedTab.value = tab
   }
 
-  fun availableTabsFor(snapshot: DeskSnapshot): List<AppTab> {
-    val role = snapshot.activeRole
-    val isAlsoHost = snapshot.currentStaff?.hostListed == true
-    return buildList {
-      if (role == StaffRole.RECEPTION || role == StaffRole.ADMIN) {
-        add(AppTab.RECEPTION)
-      }
-      if (role == StaffRole.HOST || isAlsoHost) {
-        add(AppTab.MY_VISITORS)
-      }
-      if (role == StaffRole.RECEPTION || role == StaffRole.ADMIN) {
-        add(AppTab.VISITOR_LOG)
-      }
-      if (role == StaffRole.ADMIN) {
-        add(AppTab.ADMIN)
-      }
-      if (isEmpty()) {
-        add(AppTab.MY_VISITORS)
-      }
-      add(AppTab.PROFILE)
-    }
-  }
+  fun availableTabsFor(snapshot: DeskSnapshot): List<AppTab> =
+    resolveTabsForRole(
+      role = snapshot.activeRole,
+      hostListed = snapshot.currentStaff?.hostListed == true,
+    )
 
   fun initializeOfficeWorkspace(officeName: String, fullName: String, shownAs: String, cabin: String) {
     if (_isSettingUpWorkspace.value) return
@@ -506,23 +613,16 @@ class MainViewModel(
   }
 
   fun applySuggestedProfile(profile: VisitorProfile, hosts: List<StaffMember>) {
-    val current = _receptionForm.value
-    val validHostId =
-      hosts.firstOrNull { it.id == profile.lastHostStaffId }?.id ?: current.selectedHostId
-    val usableMobile = if (profile.mobile == "919999999999") "" else profile.mobile
     _receptionForm.value =
-      current.copy(
-        mobile = usableMobile,
-        name = profile.name,
-        company = profile.company,
-        email = profile.email,
-        dob = profile.dob.ifBlank { current.dob },
-        selectedHostId = validHostId,
-        selectedReason = profile.lastReason.ifBlank { current.selectedReason },
-        matchedProfile = profile,
-        suppressedAutoMatchMobile = "",
+      populateFormFromProfile(
+        current = _receptionForm.value,
+        profile = profile,
+        hosts = hosts,
       )
     clearVisitorSearch()
+    clearCardScan()
+    val displayName = profile.name.trim().ifBlank { "visitor" }
+    _feedback.tryEmit("Filled form for $displayName")
   }
 
   fun clearReturningMatch() {
@@ -539,8 +639,80 @@ class MainViewModel(
       )
   }
 
+  fun scanVisitorCard(
+    context: Context,
+    imageUri: Uri,
+    profiles: List<VisitorProfile>,
+    hosts: List<StaffMember>,
+  ) {
+    cardScanJob?.cancel()
+    cardScanJob =
+      viewModelScope.launch {
+        var preview: ImageBitmap? = null
+        try {
+          _cardScanState.value = CardScanState.Scanning(preview = null)
+          val bitmap = cardScanner.loadScaledCardBitmap(context, imageUri)
+          preview = bitmap.asImageBitmap()
+          _cardScanState.value = CardScanState.Scanning(preview = preview)
+
+          val result = cardScanner.extractFromBitmap(bitmap)
+          result
+            .onSuccess { extracted ->
+              val current = _receptionForm.value
+              val matchedProfile =
+                profiles.firstOrNull { profile ->
+                  (extracted.mobile.length >= 10 && profile.mobile == extracted.mobile) ||
+                    (extracted.email.isNotBlank() && profile.email.equals(extracted.email, ignoreCase = true))
+                }
+              val validHostId =
+                matchedProfile?.let { m -> hosts.firstOrNull { it.id == m.lastHostStaffId }?.id }
+                  ?: current.selectedHostId
+              val validReason =
+                matchedProfile?.lastReason?.takeIf { it.isNotBlank() } ?: current.selectedReason
+              val cardRemark = extracted.resolvedRemark()
+
+              _receptionForm.value =
+                current.copy(
+                  name = extracted.name.ifBlank { matchedProfile?.name ?: current.name },
+                  company = extracted.company.ifBlank { matchedProfile?.company ?: current.company },
+                  mobile = extracted.mobile.ifBlank { current.mobile },
+                  email = extracted.email.ifBlank { matchedProfile?.email ?: current.email },
+                  dob = matchedProfile?.dob?.ifBlank { current.dob } ?: current.dob,
+                  remark = cardRemark.ifBlank { current.remark },
+                  selectedHostId = validHostId,
+                  selectedReason = validReason,
+                  matchedProfile = matchedProfile ?: current.matchedProfile,
+                  suppressedAutoMatchMobile = "",
+                )
+              _cardScanState.value = CardScanState.Success(extracted, preview)
+              val label = extracted.name.ifBlank { extracted.company.ifBlank { "visitor card" } }
+              _feedback.tryEmit("Filled form from card: $label")
+            }
+            .onFailure { err ->
+              val msg = err.localizedMessage ?: "Failed to read details from the card image."
+              _cardScanState.value = CardScanState.Error(msg, preview)
+            }
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          Log.e(TAG, "Failed to load or scan visitor card image", e)
+          _cardScanState.value =
+            CardScanState.Error(
+              e.localizedMessage ?: "Could not open the selected card image.",
+              preview,
+            )
+        }
+      }
+  }
+
+  fun clearCardScan() {
+    cardScanJob?.cancel()
+    _cardScanState.value = CardScanState.Idle
+  }
+
   fun clearReceptionForm(defaultReason: String, defaultHostId: String) {
     clearVisitorSearch()
+    clearCardScan()
     _receptionForm.value =
       ReceptionFormState(
         selectedReason = defaultReason,
@@ -594,6 +766,7 @@ class MainViewModel(
           val defaultReason = snapshot.reasons.firstOrNull { it.shown }?.label ?: "Meeting"
           val defaultHost =
             snapshot.staff.firstOrNull { it.activeAccount && it.hostListed }?.id ?: host.id
+          clearCardScan()
           _receptionForm.value =
             ReceptionFormState(
               selectedReason = defaultReason,
@@ -622,38 +795,101 @@ class MainViewModel(
   }
 
   fun sendVisitorIn(officeId: String, visit: Visit, note: String = "Send in") {
+    if (visit.id in _inFlightVisitIds.value) return
+    val cleanNote = note.trim().take(120).ifBlank { "Send in" }
+    val nowTs = com.google.firebase.Timestamp.now()
+    _inFlightVisitIds.value = _inFlightVisitIds.value + visit.id
+    _pendingVisitOverrides.value =
+      _pendingVisitOverrides.value + (
+        visit.id to visit.copy(
+          status = VisitStatus.IN_MEETING.wireValue,
+          waitNote = cleanNote,
+          meetingStartedAt = visit.meetingStartedAt ?: nowTs,
+        )
+      )
     viewModelScope.launch {
       repository
-        .sendVisitorIn(officeId, visit.id, note)
-        .onSuccess { _feedback.tryEmit("Sending ${visit.visitorName} in to ${visit.hostShownAs}") }
-        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Could not update visit") }
+        .sendVisitorIn(officeId, visit.id, cleanNote)
+        .onSuccess {
+          _feedback.tryEmit("Sending ${visit.visitorName} in ($cleanNote)")
+        }
+        .onFailure {
+          _feedback.tryEmit(it.localizedMessage ?: "Could not update visit")
+        }
+      _pendingVisitOverrides.value = _pendingVisitOverrides.value - visit.id
+      _inFlightVisitIds.value = _inFlightVisitIds.value - visit.id
     }
   }
 
-  fun askVisitorToWait(officeId: String, visit: Visit) {
+  fun askVisitorToWait(
+    officeId: String,
+    visit: Visit,
+    note: String = "asked to wait 10 min",
+  ) {
+    if (visit.id in _inFlightVisitIds.value) return
+    val cleanNote = note.trim().take(120).ifBlank { "asked to wait 10 min" }
+    _inFlightVisitIds.value = _inFlightVisitIds.value + visit.id
+    _pendingVisitOverrides.value =
+      _pendingVisitOverrides.value + (visit.id to visit.copy(waitNote = cleanNote))
     viewModelScope.launch {
       repository
-        .askVisitorToWait(officeId, visit.id)
-        .onSuccess { _feedback.tryEmit("Asked reception to have ${visit.visitorName} wait 10 min") }
-        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Could not update visit") }
+        .askVisitorToWait(officeId, visit.id, cleanNote)
+        .onSuccess {
+          _feedback.tryEmit("Sent to reception: \"$cleanNote\"")
+        }
+        .onFailure {
+          _feedback.tryEmit(it.localizedMessage ?: "Could not send reply")
+        }
+      _pendingVisitOverrides.value = _pendingVisitOverrides.value - visit.id
+      _inFlightVisitIds.value = _inFlightVisitIds.value - visit.id
     }
   }
 
-  fun denyVisitorToday(officeId: String, visit: Visit) {
+  fun denyVisitorToday(
+    officeId: String,
+    visit: Visit,
+    reasonNote: String = "can't meet today",
+  ) {
+    if (visit.id in _inFlightVisitIds.value) return
+    val cleanNote = reasonNote.trim().take(120).ifBlank { "can't meet today" }
+    val nowTs = com.google.firebase.Timestamp.now()
+    _inFlightVisitIds.value = _inFlightVisitIds.value + visit.id
+    _pendingVisitOverrides.value =
+      _pendingVisitOverrides.value + (
+        visit.id to visit.copy(
+          status = VisitStatus.DENIED.wireValue,
+          waitNote = cleanNote,
+          endedAt = nowTs,
+        )
+      )
     viewModelScope.launch {
       repository
-        .denyVisitorToday(officeId, visit.id)
-        .onSuccess { _feedback.tryEmit("Marked ${visit.visitorName} as Not today") }
+        .denyVisitorToday(officeId, visit.id, cleanNote)
+        .onSuccess { _feedback.tryEmit("Marked ${visit.visitorName}: $cleanNote") }
         .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Could not update visit") }
+      _pendingVisitOverrides.value = _pendingVisitOverrides.value - visit.id
+      _inFlightVisitIds.value = _inFlightVisitIds.value - visit.id
     }
   }
 
   fun markMeetingDone(officeId: String, visit: Visit) {
+    if (visit.id in _inFlightVisitIds.value) return
+    val nowTs = com.google.firebase.Timestamp.now()
+    _inFlightVisitIds.value = _inFlightVisitIds.value + visit.id
+    _pendingVisitOverrides.value =
+      _pendingVisitOverrides.value + (
+        visit.id to visit.copy(
+          status = VisitStatus.DONE.wireValue,
+          endedAt = nowTs,
+        )
+      )
     viewModelScope.launch {
       repository
         .markMeetingDone(officeId, visit.id)
         .onSuccess { _feedback.tryEmit("Meeting with ${visit.visitorName} marked Done") }
         .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Could not mark done") }
+      _pendingVisitOverrides.value = _pendingVisitOverrides.value - visit.id
+      _inFlightVisitIds.value = _inFlightVisitIds.value - visit.id
     }
   }
 
@@ -673,6 +909,7 @@ class MainViewModel(
     notes: String,
     role: StaffRole,
     hostListed: Boolean,
+    photoUrl: String = "",
   ) {
     val office = snapshot.office ?: return
     if (_isBusy.value) return
@@ -697,6 +934,7 @@ class MainViewModel(
           notes = notes,
           role = role,
           hostListed = hostListed,
+          photoUrl = photoUrl,
         )
       _isBusy.value = false
       result
@@ -732,6 +970,25 @@ class MainViewModel(
       result
         .onSuccess { _feedback.tryEmit("Saved your seating & required items") }
         .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to save profile") }
+    }
+  }
+
+  fun updateOwnAvailabilityStatus(snapshot: DeskSnapshot, availability: HostAvailability) {
+    val officeId = snapshot.office?.id.orEmpty()
+    val staffId = snapshot.currentStaff?.id.orEmpty()
+    if (officeId.isBlank() || staffId.isBlank()) return
+    if (snapshot.currentStaff?.parsedAvailability() == availability) return
+    _pendingAvailability.value = availability
+    viewModelScope.launch {
+      repository
+        .updateOwnAvailabilityStatus(
+          officeId = officeId,
+          staffId = staffId,
+          availability = availability,
+        )
+        .onSuccess { _feedback.tryEmit("Status set to ${availability.label}") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Could not update status") }
+      _pendingAvailability.value = null
     }
   }
 
@@ -798,7 +1055,232 @@ class MainViewModel(
     }
   }
 
-  private companion object {
-    const val TAG = "MainViewModel"
+  companion object {
+    private const val TAG = "MainViewModel"
+    const val PRIMARY_ADMIN_EMAIL = "kunwarsingh9752005805@gmail.com"
+
+    fun isBootstrapAdminEmail(email: String): Boolean =
+      email.trim().lowercase() == PRIMARY_ADMIN_EMAIL
+
+    fun filterHostSpecificVisits(
+      visits: List<Visit>,
+      userEmail: String,
+      staffId: String? = null,
+    ): List<Visit> {
+      val cleanEmail = userEmail.trim().lowercase()
+      val cleanStaffId = staffId?.trim().orEmpty()
+      return visits.filter { visit ->
+        val matchesEmail =
+          cleanEmail.isNotBlank() && visit.hostEmail.trim().lowercase() == cleanEmail
+        val matchesStaffId =
+          cleanStaffId.isNotBlank() &&
+            visit.hostStaffId == cleanStaffId &&
+            (visit.hostEmail.isBlank() || visit.hostEmail.trim().lowercase() == cleanEmail)
+        matchesEmail || matchesStaffId
+      }
+    }
+
+    fun resolveTabsForRole(role: StaffRole, hostListed: Boolean): List<AppTab> =
+      when (role) {
+        StaffRole.RECEPTION ->
+          buildList {
+            add(AppTab.RECEPTION)
+            if (hostListed) add(AppTab.MY_VISITORS)
+            add(AppTab.PROFILE)
+          }
+        StaffRole.ADMIN ->
+          buildList {
+            add(AppTab.ADMIN)
+            add(AppTab.VISITOR_LOG)
+            if (hostListed) add(AppTab.MY_VISITORS)
+            add(AppTab.PROFILE)
+          }
+        StaffRole.HOST ->
+          listOf(
+            AppTab.MY_VISITORS,
+            AppTab.PROFILE,
+          )
+      }
+
+    fun buildHostClients(
+      visits: List<Visit>,
+      userEmail: String,
+      staffId: String? = null,
+    ): List<HostClientSummary> {
+      val scoped = filterHostSpecificVisits(visits = visits, userEmail = userEmail, staffId = staffId)
+      if (scoped.isEmpty()) return emptyList()
+
+      val sorted = scoped.sortedByDescending { it.arrivedAt?.toDate()?.time ?: 0L }
+      val grouped = linkedMapOf<String, MutableList<Visit>>()
+      for (visit in sorted) {
+        if (visit.visitorName.isBlank()) continue
+        val digits =
+          visit.visitorMobile.filter { it.isDigit() }.takeUnless { it == "919999999999" }.orEmpty()
+        val emailKey = visit.visitorEmail.trim().lowercase()
+        val key =
+          when {
+            digits.length >= 6 -> "m:$digits"
+            emailKey.isNotBlank() -> "e:$emailKey"
+            else -> "n:${visit.visitorName.trim().lowercase()}|${visit.visitorCompany.trim().lowercase()}"
+          }
+        grouped.getOrPut(key) { mutableListOf() }.add(visit)
+      }
+
+      return grouped.entries.map { (key, list) ->
+        val latest = list.first()
+        val bestCompany = list.firstOrNull { it.visitorCompany.isNotBlank() }?.visitorCompany.orEmpty()
+        val bestMobile =
+          list
+            .map { it.visitorMobile.filter { ch -> ch.isDigit() } }
+            .firstOrNull { it.length >= 6 && it != "919999999999" }
+            .orEmpty()
+        val bestEmail = list.firstOrNull { it.visitorEmail.isNotBlank() }?.visitorEmail.orEmpty()
+        val bestProfile = list.firstOrNull { it.visitorJobProfile.isNotBlank() }?.visitorJobProfile.orEmpty()
+        val bestRemark = list.firstOrNull { it.remark.isNotBlank() }?.remark.orEmpty()
+        HostClientSummary(
+          key = key,
+          name = latest.visitorName.trim(),
+          company = bestCompany.trim(),
+          mobile = bestMobile,
+          email = bestEmail.trim(),
+          jobProfile = bestProfile.trim(),
+          visitCount = list.size,
+          completedCount = list.count { it.parsedStatus() == VisitStatus.DONE },
+          lastVisitedAtMillis = latest.arrivedAt?.toDate()?.time ?: 0L,
+          lastReason = latest.reason.trim(),
+          lastRemark = bestRemark.trim(),
+          lastStatus = latest.parsedStatus(),
+        )
+      }
+    }
+
+    fun populateFormFromProfile(
+      current: ReceptionFormState,
+      profile: VisitorProfile,
+      hosts: List<StaffMember>,
+    ): ReceptionFormState {
+      val validHostId =
+        hosts.firstOrNull { it.id == profile.lastHostStaffId }?.id ?: current.selectedHostId
+      val rawDigits = profile.mobile.filter { it.isDigit() }
+      val usableMobile = if (rawDigits == "919999999999") "" else rawDigits
+      val isSameVisitor =
+        (profile.id.isNotBlank() && current.matchedProfile?.id == profile.id) ||
+          (usableMobile.isNotBlank() && current.mobile == usableMobile && current.name.equals(profile.name, ignoreCase = true))
+      return current.copy(
+        mobile = usableMobile,
+        name = profile.name.trim(),
+        company = profile.company.trim(),
+        email = profile.email.trim(),
+        dob = profile.dob.trim(),
+        remark = if (isSameVisitor) current.remark else "",
+        selectedHostId = validHostId,
+        selectedReason = profile.lastReason.trim().ifBlank { current.selectedReason },
+        matchedProfile = profile.takeIf { it.id.isNotBlank() },
+        suppressedAutoMatchMobile = "",
+        isSubmitting = false,
+      )
+    }
+
+    fun buildRecentVisitors(
+      profiles: List<VisitorProfile>,
+      visits: List<Visit>,
+      limit: Int = 15,
+    ): List<VisitorProfile> {
+      if (limit <= 0) return emptyList()
+      val seenKeys = mutableSetOf<String>()
+      val ordered = mutableListOf<VisitorProfile>()
+
+      fun dedupKey(name: String, company: String, mobile: String, email: String): String {
+        val digits = mobile.filter { it.isDigit() }.takeUnless { it == "919999999999" }.orEmpty()
+        if (digits.length >= 6) return "m:$digits"
+        val cleanEmail = email.trim().lowercase()
+        if (cleanEmail.isNotBlank()) return "e:$cleanEmail"
+        return "n:${name.trim().lowercase()}|${company.trim().lowercase()}"
+      }
+
+      fun findMatchingProfile(visit: Visit): VisitorProfile? {
+        val visitDigits =
+          visit.visitorMobile.filter { it.isDigit() }.takeUnless { it == "919999999999" }.orEmpty()
+        if (visitDigits.length >= 6) {
+          profiles.firstOrNull { it.mobile.filter { ch -> ch.isDigit() } == visitDigits }?.let {
+            return it
+          }
+        }
+        val visitEmail = visit.visitorEmail.trim().lowercase()
+        if (visitEmail.isNotBlank()) {
+          profiles.firstOrNull { it.email.trim().lowercase() == visitEmail }?.let { return it }
+        }
+        val visitName = visit.visitorName.trim()
+        val visitComp = visit.visitorCompany.trim()
+        return profiles.firstOrNull {
+          it.name.trim().equals(visitName, ignoreCase = true) &&
+            it.company.trim().equals(visitComp, ignoreCase = true)
+        }
+      }
+
+      val sortedVisits =
+        visits
+          .filter { it.visitorName.isNotBlank() }
+          .sortedByDescending { it.arrivedAt?.toDate()?.time ?: 0L }
+
+      for (visit in sortedVisits) {
+        if (ordered.size >= limit) break
+        val matched = findMatchingProfile(visit)
+        val candidate =
+          if (matched != null) {
+            matched.copy(
+              name = matched.name.ifBlank { visit.visitorName },
+              company = matched.company.ifBlank { visit.visitorCompany },
+              mobile =
+                if (matched.mobile.isBlank() || matched.mobile == "919999999999") {
+                  visit.visitorMobile
+                } else {
+                  matched.mobile
+                },
+              email = matched.email.ifBlank { visit.visitorEmail },
+              lastHostStaffId = matched.lastHostStaffId.ifBlank { visit.hostStaffId },
+              lastReason = matched.lastReason.ifBlank { visit.reason },
+            )
+          } else {
+            VisitorProfile(
+              id = "",
+              mobile = visit.visitorMobile,
+              name = visit.visitorName,
+              company = visit.visitorCompany,
+              email = visit.visitorEmail,
+              visitorJobProfile = visit.visitorJobProfile,
+              remark = visit.remark,
+              visitCount = visit.visitNumber.coerceAtLeast(1L),
+              lastHostStaffId = visit.hostStaffId,
+              lastReason = visit.reason,
+              updatedAt = visit.arrivedAt,
+            )
+          }
+        val key = dedupKey(candidate.name, candidate.company, candidate.mobile, candidate.email)
+        if (seenKeys.add(key)) {
+          ordered += candidate
+        }
+      }
+
+      if (ordered.size < limit) {
+        val remainingProfiles =
+          profiles
+            .filter { it.name.isNotBlank() }
+            .sortedWith(
+              compareByDescending<VisitorProfile> { it.updatedAt?.toDate()?.time ?: 0L }
+                .thenByDescending { it.visitCount }
+                .thenBy { it.name.lowercase() }
+            )
+        for (profile in remainingProfiles) {
+          if (ordered.size >= limit) break
+          val key = dedupKey(profile.name, profile.company, profile.mobile, profile.email)
+          if (seenKeys.add(key)) {
+            ordered += profile
+          }
+        }
+      }
+
+      return ordered
+    }
   }
 }

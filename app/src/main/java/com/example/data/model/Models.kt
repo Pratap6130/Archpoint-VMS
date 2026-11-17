@@ -17,6 +17,17 @@ enum class StaffRole(val wireValue: String, val label: String) {
   }
 }
 
+enum class HostAvailability(val wireValue: String, val label: String) {
+  AVAILABLE("Available", "Available"),
+  BUSY("Busy", "Busy"),
+  AWAY("Away", "Away");
+
+  companion object {
+    fun fromWire(raw: String?): HostAvailability =
+      entries.firstOrNull { it.wireValue.equals(raw?.trim(), ignoreCase = true) } ?: AVAILABLE
+  }
+}
+
 enum class VisitStatus(val wireValue: String) {
   WAITING("Waiting"),
   IN_MEETING("In meeting"),
@@ -79,6 +90,7 @@ data class Office(
   val ownerEmail: String = "",
   val activeMemberEmails: List<String> = emptyList(),
   val receptionAdminEmails: List<String> = emptyList(),
+  val receptionEmails: List<String> = emptyList(),
   val adminEmails: List<String> = emptyList(),
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
@@ -99,16 +111,20 @@ data class StaffMember(
   val otherLocation: String = "",
   val requiredThings: String = "",
   val notes: String = "",
+  val availabilityStatus: String = HostAvailability.AVAILABLE.wireValue,
   val listOrder: Long = 1L,
   val hostListed: Boolean = true,
   val activeAccount: Boolean = true,
   val uid: String = "",
+  val photoUrl: String = "",
   val officeOwnerUid: String = "",
   val allowedReaderEmails: List<String> = emptyList(),
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 ) {
   fun parsedRole(): StaffRole = StaffRole.fromWire(role)
+
+  fun parsedAvailability(): HostAvailability = HostAvailability.fromWire(availabilityStatus)
 
   fun formattedSeating(): String {
     val parts = mutableListOf<String>()

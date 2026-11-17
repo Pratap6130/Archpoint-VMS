@@ -6,6 +6,16 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
+data class OfficeLocationPreset(
+  val id: String,
+  val label: String,
+  val floor: String,
+  val cabin: String,
+) {
+  val chipText: String = "$label ($floor)"
+  val combinedLocation: String = "$label · $floor"
+}
+
 data class SeedStaffSpec(
   val id: String,
   val fullName: String,
@@ -78,6 +88,64 @@ data class SeedPastVisitSpec(
 }
 
 object ArchPointSeedData {
+  val locationPresets: List<OfficeLocationPreset> =
+    listOf(
+      OfficeLocationPreset(
+        id = "studio_3rd",
+        label = "Studio",
+        floor = "3rd Floor",
+        cabin = "Studio",
+      ),
+      OfficeLocationPreset(
+        id = "conference_2nd",
+        label = "Conference",
+        floor = "2nd Floor",
+        cabin = "Conference",
+      ),
+      OfficeLocationPreset(
+        id = "amit_cabin_2nd",
+        label = "Amit Cabin",
+        floor = "2nd Floor",
+        cabin = "Amit Cabin",
+      ),
+      OfficeLocationPreset(
+        id = "vartika_cabin_2nd",
+        label = "Vartika Cabin",
+        floor = "2nd Floor",
+        cabin = "Vartika Cabin",
+      ),
+      OfficeLocationPreset(
+        id = "neha_cabin_2nd",
+        label = "Neha Cabin",
+        floor = "2nd Floor",
+        cabin = "Neha Cabin",
+      ),
+      OfficeLocationPreset(
+        id = "vasudha_cabin_2nd",
+        label = "Vasudha Cabin",
+        floor = "2nd Floor",
+        cabin = "Vasudha Cabin",
+      ),
+      OfficeLocationPreset(
+        id = "yogendra_cabin_2nd",
+        label = "Yogendra Cabin",
+        floor = "2nd Floor",
+        cabin = "Yogendra Cabin",
+      ),
+      OfficeLocationPreset(
+        id = "poonam_seating_ground",
+        label = "Poonam Ma'am Seating",
+        floor = "Ground Floor",
+        cabin = "Poonam Ma'am Seating",
+      ),
+      OfficeLocationPreset(
+        id = "himanshi_seating_ground",
+        label = "Himanshi Seating",
+        floor = "Ground Floor",
+        cabin = "Himanshi Seating",
+      ),
+    )
+
   val defaultReasons =
     listOf(
       "Meeting",
@@ -100,8 +168,8 @@ object ArchPointSeedData {
         shownAs = "Poonam Ma’am",
         designation = "Founder",
         department = "Arch Point Group",
-        floor = "Ground",
-        cabin = "Poonam Ma’am cabin",
+        floor = "Ground Floor",
+        cabin = "Poonam Ma'am Seating",
         otherLocation = "",
         role = StaffRole.HOST,
         hostListed = true,
@@ -114,12 +182,12 @@ object ArchPointSeedData {
         shownAs = "Amit Sir",
         designation = "CMD",
         department = "Management",
-        floor = "2nd",
-        cabin = "Amit cabin",
-        otherLocation = "3rd floor studio (name to confirm)",
+        floor = "2nd Floor",
+        cabin = "Amit Cabin",
+        otherLocation = "Studio (3rd Floor)",
         role = StaffRole.HOST,
         hostListed = true,
-        notes = "Which location is usual? Client/vendor days (Tue and Sat) may use Board room, 3rd",
+        notes = "Client/vendor days (Tue and Sat) may use Conference (2nd Floor) or Studio (3rd Floor)",
         listOrder = 2L,
       ),
       SeedStaffSpec(
@@ -128,8 +196,8 @@ object ArchPointSeedData {
         shownAs = "Vasudha Ma’am",
         designation = "Director of Design",
         department = "Design",
-        floor = "2nd",
-        cabin = "Vasudha cabin",
+        floor = "2nd Floor",
+        cabin = "Vasudha Cabin",
         otherLocation = "",
         role = StaffRole.HOST,
         hostListed = true,
@@ -142,8 +210,8 @@ object ArchPointSeedData {
         shownAs = "Neha Ma’am",
         designation = "COO",
         department = "Operations",
-        floor = "2nd",
-        cabin = "Neha cabin",
+        floor = "2nd Floor",
+        cabin = "Neha Cabin",
         otherLocation = "",
         role = StaffRole.HOST,
         hostListed = true,
@@ -156,8 +224,8 @@ object ArchPointSeedData {
         shownAs = "Vartika Ma’am",
         designation = "HR and interviews",
         department = "HR",
-        floor = "2nd",
-        cabin = "Vartika cabin",
+        floor = "2nd Floor",
+        cabin = "Vartika Cabin",
         otherLocation = "",
         role = StaffRole.HOST,
         hostListed = true,
@@ -170,12 +238,12 @@ object ArchPointSeedData {
         shownAs = "Yogendra Ji",
         designation = "Architect",
         department = "Design",
-        floor = "2nd",
-        cabin = "Yogendra cabin",
+        floor = "2nd Floor",
+        cabin = "Yogendra Cabin",
         otherLocation = "",
         role = StaffRole.HOST,
         hostListed = true,
-        notes = "Floor assumed 2nd; confirm",
+        notes = "",
         listOrder = 6L,
       ),
       SeedStaffSpec(
@@ -184,12 +252,12 @@ object ArchPointSeedData {
         shownAs = "Yogendra Choudhary",
         designation = "Senior Civil Engineer",
         department = "Operations",
-        floor = "2nd",
-        cabin = "Yogendra Choudhary cabin",
+        floor = "2nd Floor",
+        cabin = "Yogendra Cabin",
         otherLocation = "",
         role = StaffRole.HOST,
         hostListed = true,
-        notes = "Floor assumed 2nd; confirm",
+        notes = "",
         listOrder = 7L,
       ),
       SeedStaffSpec(
@@ -198,12 +266,12 @@ object ArchPointSeedData {
         shownAs = "Satveer Ji",
         designation = "Managing Officer",
         department = "Operations",
-        floor = "2nd",
-        cabin = "Satveer cabin",
+        floor = "2nd Floor",
+        cabin = "Conference",
         otherLocation = "",
         role = StaffRole.HOST,
         hostListed = true,
-        notes = "Floor and department assumed; confirm",
+        notes = "",
         listOrder = 8L,
       ),
       SeedStaffSpec(
@@ -212,8 +280,8 @@ object ArchPointSeedData {
         shownAs = "Himanshi Gupta",
         designation = "Host",
         department = "ArchPoint Wellness",
-        floor = "Ground",
-        cabin = "ArchPoint Wellness cabin",
+        floor = "Ground Floor",
+        cabin = "Himanshi Seating",
         otherLocation = "",
         role = StaffRole.HOST,
         hostListed = true,
@@ -240,8 +308,8 @@ object ArchPointSeedData {
         shownAs = "Reception",
         designation = "Reception",
         department = "Front office",
-        floor = "Ground",
-        cabin = "Reception and waiting",
+        floor = "Ground Floor",
+        cabin = "Reception desk",
         otherLocation = "",
         role = StaffRole.RECEPTION,
         hostListed = false,

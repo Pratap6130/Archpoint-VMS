@@ -83,12 +83,18 @@ class VisitorAlertService : Service() {
     lastVisitsById = null
     val repo = VisitorDeskRepository(applicationContext)
     val role = StaffRole.fromWire(roleWire)
-    val isReceptionOrAdmin = role == StaffRole.ADMIN || role == StaffRole.RECEPTION
+    val isReception = role == StaffRole.RECEPTION
+
+    val visitsFlow =
+      if (role == StaffRole.HOST) {
+        repo.observeHostVisitorNotifications(officeId, userEmail)
+      } else {
+        repo.observeVisits(officeId, userEmail)
+      }
 
     listenerJob =
       serviceScope.launch {
-        repo
-          .observeVisits(officeId, userEmail)
+        visitsFlow
           .catch { /* Handled by UI / stop safely if signed out */ }
           .collectLatest { visits ->
             val currentMap = visits.associateBy { it.id }
@@ -99,7 +105,7 @@ class VisitorAlertService : Service() {
                   context = applicationContext,
                   officeId = officeId,
                   userEmail = userEmail,
-                  isReceptionOrAdmin = isReceptionOrAdmin,
+                  isReception = isReception,
                   prev = previousMap[visit.id],
                   curr = visit,
                 )

@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Business
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Login
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.VerifiedUser
@@ -210,7 +211,7 @@ fun AuthScreen(onAuthSuccess: () -> Unit) {
             )
             Spacer(Modifier.size(6.dp))
             Text(
-              text = "Staff accounts & roles are managed by your ArchPoint Admin.",
+              text = "Access is restricted to Admin-assigned staff emails.",
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -283,7 +284,7 @@ fun WorkspaceSetupScreen(
           }
 
           Text(
-            "No existing office was linked to your email yet. Create your office workspace as Admin (and listed Host) to start checking in visitors immediately, or ask your Admin to add $userEmail in the Admin tab.",
+            "Initialize the ArchPoint Visitors workspace as the primary Admin. Once created, add your Reception and Host staff Google emails in the Admin tab so only assigned team members can sign in.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
@@ -404,6 +405,84 @@ fun AccountDeactivatedScreen(
               ),
           ) {
             Text(stringResource(R.string.sign_out))
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+fun AccessNotAssignedScreen(
+  userEmail: String,
+  onSignOut: () -> Unit,
+) {
+  GlassBackdrop(
+    modifier = Modifier.fillMaxSize(),
+  ) {
+    Box(
+      modifier =
+        Modifier.fillMaxSize()
+          .systemBarsPadding()
+          .padding(24.dp),
+      contentAlignment = Alignment.Center,
+    ) {
+      GlassCard(
+        modifier = Modifier.fillMaxWidth().widthIn(max = 440.dp),
+        shape = RoundedCornerShape(24.dp),
+        contentPadding = PaddingValues(24.dp),
+      ) {
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+          Box(
+            modifier =
+              Modifier.size(56.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.errorContainer),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.Lock,
+              contentDescription = "Access restricted",
+              tint = MaterialTheme.colorScheme.onErrorContainer,
+              modifier = Modifier.size(28.dp),
+            )
+          }
+          Text(
+            text = "Access not assigned",
+            style = MaterialTheme.typography.titleLarge,
+            textAlign = TextAlign.Center,
+          )
+          Text(
+            text = "$userEmail is not assigned to any ArchPoint staff role.",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center,
+          )
+          Text(
+            text = "Only emails assigned by the ArchPoint Admin can access the desk. Ask your Admin to add your Google email in Staff Management, or switch to your assigned account.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+          )
+          Spacer(Modifier.height(6.dp))
+          Button(
+            onClick = onSignOut,
+            modifier = Modifier.fillMaxWidth().height(48.dp).testTag("access_denied_sign_out_button"),
+            shape = RoundedCornerShape(14.dp),
+            colors =
+              ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+              ),
+          ) {
+            Icon(Icons.Rounded.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(8.dp))
+            Text("Sign out / Switch account")
           }
         }
       }

@@ -56,6 +56,12 @@ service cloud.firestore {
       );
     }
 
+    function isReception(officeId) {
+      return exists(/databases/$(database)/documents/offices/$(officeId)) &&
+             verifiedEmail() in get(/databases/$(database)/documents/offices/$(officeId)).data.get('receptionEmails', []) &&
+             verifiedEmail() in get(/databases/$(database)/documents/offices/$(officeId)).data.activeMemberEmails;
+    }
+
     function isReceptionOrAdmin(officeId) {
       return exists(/databases/$(database)/documents/offices/$(officeId)) && (
         get(/databases/$(database)/documents/offices/$(officeId)).data.ownerUid == request.auth.uid ||
@@ -89,6 +95,7 @@ service cloud.firestore {
              isValidEmail(data.ownerEmail) &&
              isValidBoundedEmailList(data.activeMemberEmails) &&
              isValidBoundedEmailList(data.receptionAdminEmails) &&
+             (!('receptionEmails' in data) || isValidBoundedEmailList(data.receptionEmails)) &&
              isValidBoundedEmailList(data.adminEmails) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
@@ -106,10 +113,12 @@ service cloud.firestore {
              (!('otherLocation' in data) || (data.otherLocation is string && data.otherLocation.size() <= 120)) &&
              (!('requiredThings' in data) || (data.requiredThings is string && data.requiredThings.size() <= 200)) &&
              (!('notes' in data) || (data.notes is string && data.notes.size() <= 240)) &&
+             (!('availabilityStatus' in data) || data.availabilityStatus in ['Available', 'Busy', 'Away']) &&
              data.listOrder is int && data.listOrder >= 0 && data.listOrder <= 9999 &&
              data.hostListed is bool &&
              data.activeAccount is bool &&
              data.uid is string && data.uid.size() <= 128 &&
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 120000)) &&
              data.officeOwnerUid is string && data.officeOwnerUid.size() >= 1 && data.officeOwnerUid.size() <= 128 &&
              isValidBoundedEmailList(data.allowedReaderEmails) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
@@ -173,12 +182,12 @@ service cloud.firestore {
     }
 
     function canActOnVisitTransition(officeId, existingData, incomingData) {
-      let recOrAdmin = isReceptionOrAdmin(officeId);
+      let recOnly = isReception(officeId);
       let isAssignedHost = existingData.hostEmail == verifiedEmail();
-      let isActor = recOrAdmin || isAssignedHost;
+      let isActor = recOnly || isAssignedHost;
       let diffKeys = incomingData.diff(existingData).affectedKeys();
       return !(existingData.status in ['Done', 'Denied']) && (
-        (recOrAdmin &&
+        (recOnly &&
          existingData.status == 'Waiting' &&
          incomingData.status == 'Waiting' &&
          incomingData.remindedCount == existingData.remindedCount + 1 &&
@@ -189,9 +198,11 @@ service cloud.firestore {
          'meetingStartedAt' in incomingData &&
          diffKeys.hasOnly(['status', 'waitNote', 'meetingStartedAt', 'updatedAt'])) ||
         (isAssignedHost &&
-         existingData.status == 'Waiting' &&
-         incomingData.status == 'Waiting' &&
-         incomingData.waitNote == 'asked to wait 10 min' &&
+         existingData.status in ['Waiting', 'In meeting'] &&
+         incomingData.status == existingData.status &&
+         incomingData.waitNote is string &&
+         incomingData.waitNote.size() >= 1 &&
+         incomingData.waitNote.size() <= 120 &&
          diffKeys.hasOnly(['waitNote', 'updatedAt'])) ||
         (isActor &&
          existingData.status == 'Waiting' &&
@@ -254,12 +265,13 @@ service cloud.firestore {
       allow create: if isVerifiedSignedIn() &&
         isValidId(officeId) &&
         isValidOffice(incoming()) &&
+        verifiedEmail() == 'kunwarsingh9752005805@gmail.com' &&
         incoming().ownerUid == request.auth.uid &&
         incoming().ownerEmail == verifiedEmail() &&
         verifiedEmail() in incoming().activeMemberEmails &&
         verifiedEmail() in incoming().adminEmails &&
         incoming().keys().hasAll(['name', 'ownerUid', 'ownerEmail', 'activeMemberEmails', 'receptionAdminEmails', 'adminEmails', 'createdAt', 'updatedAt']) &&
-        incoming().keys().hasOnly(['name', 'ownerUid', 'ownerEmail', 'activeMemberEmails', 'receptionAdminEmails', 'adminEmails', 'createdAt', 'updatedAt']);
+        incoming().keys().hasOnly(['name', 'ownerUid', 'ownerEmail', 'activeMemberEmails', 'receptionAdminEmails', 'receptionEmails', 'adminEmails', 'createdAt', 'updatedAt']);
       allow update: if isVerifiedSignedIn() &&
         isValidId(officeId) &&
         isValidOffice(incoming()) &&
@@ -267,23 +279,23 @@ service cloud.firestore {
         incoming().ownerUid == existing().ownerUid &&
         incoming().ownerEmail == existing().ownerEmail &&
         incoming().createdAt == existing().createdAt &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'activeMemberEmails', 'receptionAdminEmails', 'adminEmails', 'updatedAt']);
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'activeMemberEmails', 'receptionAdminEmails', 'receptionEmails', 'adminEmails', 'updatedAt']);
       allow delete: if false;
 
       match /staff/{staffId} {
         allow list: if isVerifiedSignedIn() && (
-          verifiedEmail() in resource.data.allowedReaderEmails ||
-          resource.data.email == verifiedEmail()
+          (isReceptionOrAdmin(officeId) && verifiedEmail() in resource.data.allowedReaderEmails) ||
+          (resource.data.email == verifiedEmail() && isActiveOfficeMember(officeId))
         );
         allow get: if isVerifiedSignedIn() && isValidId(staffId) && (
-          isActiveOfficeMember(officeId) ||
+          isReceptionOrAdmin(officeId) ||
           existing().email == verifiedEmail()
         );
         allow create: if isVerifiedSignedIn() &&
           isValidId(staffId) &&
           isValidStaff(incoming()) &&
           incoming().keys().hasAll(['fullName', 'shownAs', 'email', 'role', 'cabin', 'listOrder', 'hostListed', 'activeAccount', 'uid', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
-          incoming().keys().hasOnly(['fullName', 'shownAs', 'email', 'role', 'designation', 'department', 'floor', 'cabin', 'otherLocation', 'requiredThings', 'notes', 'listOrder', 'hostListed', 'activeAccount', 'uid', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['fullName', 'shownAs', 'email', 'role', 'designation', 'department', 'floor', 'cabin', 'otherLocation', 'requiredThings', 'notes', 'availabilityStatus', 'listOrder', 'hostListed', 'activeAccount', 'uid', 'photoUrl', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
           isOfficeAdmin(officeId);
         allow update: if isVerifiedSignedIn() &&
           isValidId(staffId) &&
@@ -291,11 +303,11 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().officeOwnerUid == existing().officeOwnerUid && (
             (isOfficeAdmin(officeId) &&
-             incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'shownAs', 'email', 'role', 'designation', 'department', 'floor', 'cabin', 'otherLocation', 'requiredThings', 'notes', 'listOrder', 'hostListed', 'activeAccount', 'allowedReaderEmails', 'updatedAt'])) ||
+             incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'shownAs', 'email', 'role', 'designation', 'department', 'floor', 'cabin', 'otherLocation', 'requiredThings', 'notes', 'availabilityStatus', 'listOrder', 'hostListed', 'activeAccount', 'photoUrl', 'allowedReaderEmails', 'updatedAt'])) ||
             (existing().email == verifiedEmail() &&
              existing().activeAccount == true &&
              (incoming().uid == request.auth.uid || existing().uid == request.auth.uid) &&
-             incoming().diff(existing()).affectedKeys().hasOnly(['uid', 'floor', 'cabin', 'otherLocation', 'requiredThings', 'notes', 'updatedAt']))
+             incoming().diff(existing()).affectedKeys().hasOnly(['uid', 'floor', 'cabin', 'otherLocation', 'requiredThings', 'notes', 'availabilityStatus', 'updatedAt']))
           );
         allow delete: if isVerifiedSignedIn() && isValidId(staffId) && isOfficeAdmin(officeId);
       }
@@ -323,10 +335,11 @@ service cloud.firestore {
 
       match /visits/{visitId} {
         allow list: if isVerifiedSignedIn() && (
-          verifiedEmail() in resource.data.allowedReaderEmails
+          (isReceptionOrAdmin(officeId) && verifiedEmail() in resource.data.allowedReaderEmails) ||
+          (resource.data.hostEmail == verifiedEmail() && isActiveOfficeMember(officeId))
         );
         allow get: if isVerifiedSignedIn() && isValidId(visitId) && (
-          verifiedEmail() in existing().allowedReaderEmails &&
+          (verifiedEmail() in existing().allowedReaderEmails || existing().hostEmail == verifiedEmail()) &&
           isActiveOfficeMember(officeId)
         );
         allow create: if isVerifiedSignedIn() &&
@@ -337,7 +350,7 @@ service cloud.firestore {
           incoming().createdByEmail == verifiedEmail() &&
           incoming().keys().hasAll(['visitorName', 'visitorMobile', 'visitorCompany', 'visitorEmail', 'reason', 'hostStaffId', 'hostShownAs', 'hostEmail', 'hostCabin', 'visitNumber', 'status', 'waitNote', 'remindedCount', 'arrivedAt', 'waitStartedAt', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'updatedAt']) &&
           incoming().keys().hasOnly(['visitorName', 'visitorMobile', 'visitorCompany', 'visitorEmail', 'visitorType', 'visitorJobProfile', 'remark', 'reason', 'hostStaffId', 'hostShownAs', 'hostEmail', 'hostCabin', 'visitNumber', 'status', 'waitNote', 'remindedCount', 'arrivedAt', 'waitStartedAt', 'meetingStartedAt', 'endedAt', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'updatedAt']) && (
-            (incoming().status == 'Waiting' && !('endedAt' in incoming()) && isReceptionOrAdmin(officeId)) ||
+            (incoming().status == 'Waiting' && !('endedAt' in incoming()) && isReception(officeId)) ||
             (incoming().status == 'Done' && isOfficeAdmin(officeId))
           );
 
@@ -390,7 +403,7 @@ service cloud.firestore {
           incoming().recordedByUid == request.auth.uid &&
           incoming().keys().hasAll(['visitorMobile', 'dob', 'recordedByUid', 'createdAt']) &&
           incoming().keys().hasOnly(['visitorMobile', 'dob', 'recordedByUid', 'createdAt']) &&
-          isReceptionOrAdmin(officeId);
+          isReception(officeId);
       }
     }
   }
