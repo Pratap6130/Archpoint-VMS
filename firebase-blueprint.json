@@ -1,0 +1,176 @@
+{
+  "entities": {
+    "OfficeMembership": {
+      "title": "OfficeMembership",
+      "description": "Maps a staff email address to an ArchPoint office workspace and active status.",
+      "type": "object",
+      "properties": {
+        "officeId": { "type": "string", "description": "Office document identifier" },
+        "officeName": { "type": "string", "description": "Display name of the office" },
+        "staffId": { "type": "string", "description": "Staff document identifier inside the office" },
+        "email": { "type": "string", "description": "Lowercase Google email address of the staff member" },
+        "role": { "type": "string", "enum": ["admin", "reception", "host"], "description": "Assigned access role" },
+        "activeAccount": { "type": "boolean", "description": "Whether the staff account is enabled" },
+        "officeOwnerUid": { "type": "string", "description": "Firebase UID of the office creator" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update (FieldValue.serverTimestamp())" }
+      },
+      "required": ["officeId", "officeName", "staffId", "email", "role", "activeAccount", "officeOwnerUid", "updatedAt"]
+    },
+    "Office": {
+      "title": "Office",
+      "description": "Root workspace metadata and active role email allowlists for an ArchPoint office.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Office name (e.g. ArchPoint Jaipur)" },
+        "ownerUid": { "type": "string", "description": "Firebase UID of workspace owner" },
+        "ownerEmail": { "type": "string", "description": "Verified lowercase email of workspace owner" },
+        "activeMemberEmails": { "type": "array", "description": "Bounded list of active staff emails" },
+        "receptionAdminEmails": { "type": "array", "description": "Bounded list of active reception and admin emails" },
+        "adminEmails": { "type": "array", "description": "Bounded list of active admin emails" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation (FieldValue.serverTimestamp())" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last update (FieldValue.serverTimestamp())" }
+      },
+      "required": ["name", "ownerUid", "ownerEmail", "activeMemberEmails", "receptionAdminEmails", "adminEmails", "createdAt", "updatedAt"]
+    },
+    "StaffMember": {
+      "title": "StaffMember",
+      "description": "Staff profile, display name, cabin, role, host board flag, and active status.",
+      "type": "object",
+      "properties": {
+        "fullName": { "type": "string" },
+        "shownAs": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "reception", "host"] },
+        "designation": { "type": "string" },
+        "department": { "type": "string" },
+        "floor": { "type": "string" },
+        "cabin": { "type": "string" },
+        "otherLocation": { "type": "string" },
+        "requiredThings": { "type": "string" },
+        "notes": { "type": "string" },
+        "listOrder": { "type": "integer" },
+        "hostListed": { "type": "boolean" },
+        "activeAccount": { "type": "boolean" },
+        "uid": { "type": "string" },
+        "officeOwnerUid": { "type": "string" },
+        "allowedReaderEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["fullName", "shownAs", "email", "role", "cabin", "listOrder", "hostListed", "activeAccount", "uid", "officeOwnerUid", "allowedReaderEmails", "createdAt", "updatedAt"]
+    },
+    "VisitReason": {
+      "title": "VisitReason",
+      "description": "Configurable reason chip shown at reception check-in.",
+      "type": "object",
+      "properties": {
+        "label": { "type": "string" },
+        "shown": { "type": "boolean" },
+        "sortOrder": { "type": "integer" },
+        "officeOwnerUid": { "type": "string" },
+        "allowedReaderEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["label", "shown", "sortOrder", "officeOwnerUid", "allowedReaderEmails", "createdAt", "updatedAt"]
+    },
+    "Visit": {
+      "title": "Visit",
+      "description": "Visitor check-in record, live status, wait/meeting timestamps, and host reply note.",
+      "type": "object",
+      "properties": {
+        "visitorName": { "type": "string" },
+        "visitorMobile": { "type": "string" },
+        "visitorCompany": { "type": "string" },
+        "visitorEmail": { "type": "string" },
+        "visitorType": { "type": "string" },
+        "visitorJobProfile": { "type": "string" },
+        "remark": { "type": "string" },
+        "reason": { "type": "string" },
+        "hostStaffId": { "type": "string" },
+        "hostShownAs": { "type": "string" },
+        "hostEmail": { "type": "string" },
+        "hostCabin": { "type": "string" },
+        "visitNumber": { "type": "integer" },
+        "status": { "type": "string", "enum": ["Waiting", "In meeting", "Done", "Denied"] },
+        "waitNote": { "type": "string" },
+        "remindedCount": { "type": "integer" },
+        "arrivedAt": { "type": "string", "format": "date-time" },
+        "waitStartedAt": { "type": "string", "format": "date-time" },
+        "meetingStartedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" },
+        "createdByUid": { "type": "string" },
+        "createdByEmail": { "type": "string" },
+        "officeOwnerUid": { "type": "string" },
+        "allowedReaderEmails": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["visitorName", "visitorMobile", "visitorCompany", "visitorEmail", "reason", "hostStaffId", "hostShownAs", "hostEmail", "hostCabin", "visitNumber", "status", "waitNote", "remindedCount", "arrivedAt", "waitStartedAt", "createdByUid", "createdByEmail", "officeOwnerUid", "allowedReaderEmails", "updatedAt"]
+    },
+    "VisitorProfile": {
+      "title": "VisitorProfile",
+      "description": "Returning-visitor lookup record accessible to reception and admin only.",
+      "type": "object",
+      "properties": {
+        "mobile": { "type": "string" },
+        "name": { "type": "string" },
+        "company": { "type": "string" },
+        "email": { "type": "string" },
+        "dob": { "type": "string" },
+        "visitorType": { "type": "string" },
+        "visitorJobProfile": { "type": "string" },
+        "remark": { "type": "string" },
+        "visitCount": { "type": "integer" },
+        "lastHostStaffId": { "type": "string" },
+        "lastReason": { "type": "string" },
+        "officeOwnerUid": { "type": "string" },
+        "allowedReaderEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["mobile", "name", "company", "email", "visitCount", "lastHostStaffId", "lastReason", "officeOwnerUid", "allowedReaderEmails", "createdAt", "updatedAt"]
+    },
+    "VisitorDob": {
+      "title": "VisitorDob",
+      "description": "Write-only visitor date of birth record; never readable from client SDKs.",
+      "type": "object",
+      "properties": {
+        "visitorMobile": { "type": "string" },
+        "dob": { "type": "string" },
+        "recordedByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["visitorMobile", "dob", "recordedByUid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/officeMemberships/{membershipId}": {
+      "schema": { "$ref": "#/entities/OfficeMembership" },
+      "description": "Staff email-to-office membership index."
+    },
+    "/offices/{officeId}": {
+      "schema": { "$ref": "#/entities/Office" },
+      "description": "Office workspace metadata and role email allowlists."
+    },
+    "/offices/{officeId}/staff/{staffId}": {
+      "schema": { "$ref": "#/entities/StaffMember" },
+      "description": "Staff accounts, roles, cabins, and host visibility flags."
+    },
+    "/offices/{officeId}/reasons/{reasonId}": {
+      "schema": { "$ref": "#/entities/VisitReason" },
+      "description": "Configurable visit reason chips."
+    },
+    "/offices/{officeId}/visits/{visitId}": {
+      "schema": { "$ref": "#/entities/Visit" },
+      "description": "Visitor check-ins and live meeting lifecycle records."
+    },
+    "/offices/{officeId}/visitorProfiles/{mobileId}": {
+      "schema": { "$ref": "#/entities/VisitorProfile" },
+      "description": "Returning-visitor lookup directory for reception and admin."
+    },
+    "/offices/{officeId}/visitorDob/{dobId}": {
+      "schema": { "$ref": "#/entities/VisitorDob" },
+      "description": "Write-only date of birth records."
+    }
+  }
+}

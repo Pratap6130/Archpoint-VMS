@@ -1,0 +1,397 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Deny all by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL HELPERS ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedSignedIn() {
+      return isSignedIn() &&
+             request.auth.token.email is string &&
+             request.auth.token.email.size() >= 3 &&
+             request.auth.token.email_verified == true;
+    }
+
+    function verifiedEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.size() >= 3 && email.size() <= 120;
+    }
+
+    function isValidBoundedEmailList(arr) {
+      return arr is list && arr.size() <= 100 && (arr.size() == 0 || arr[0] is string);
+    }
+
+    function isOfficeOwner(officeId) {
+      return exists(/databases/$(database)/documents/offices/$(officeId)) &&
+             get(/databases/$(database)/documents/offices/$(officeId)).data.ownerUid == request.auth.uid;
+    }
+
+    function isOfficeAdmin(officeId) {
+      return exists(/databases/$(database)/documents/offices/$(officeId)) && (
+        get(/databases/$(database)/documents/offices/$(officeId)).data.ownerUid == request.auth.uid ||
+        (verifiedEmail() in get(/databases/$(database)/documents/offices/$(officeId)).data.adminEmails &&
+         verifiedEmail() in get(/databases/$(database)/documents/offices/$(officeId)).data.activeMemberEmails)
+      );
+    }
+
+    function isReceptionOrAdmin(officeId) {
+      return exists(/databases/$(database)/documents/offices/$(officeId)) && (
+        get(/databases/$(database)/documents/offices/$(officeId)).data.ownerUid == request.auth.uid ||
+        (verifiedEmail() in get(/databases/$(database)/documents/offices/$(officeId)).data.receptionAdminEmails &&
+         verifiedEmail() in get(/databases/$(database)/documents/offices/$(officeId)).data.activeMemberEmails)
+      );
+    }
+
+    function isActiveOfficeMember(officeId) {
+      return exists(/databases/$(database)/documents/offices/$(officeId)) && (
+        get(/databases/$(database)/documents/offices/$(officeId)).data.ownerUid == request.auth.uid ||
+        verifiedEmail() in get(/databases/$(database)/documents/offices/$(officeId)).data.activeMemberEmails
+      );
+    }
+
+    // --- ENTITY VALIDATION HELPERS ---
+    function isValidMembership(data) {
+      return data.officeId is string && data.officeId.size() >= 1 && data.officeId.size() <= 64 &&
+             data.officeName is string && data.officeName.size() >= 1 && data.officeName.size() <= 100 &&
+             data.staffId is string && data.staffId.size() >= 1 && data.staffId.size() <= 64 &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'reception', 'host'] &&
+             data.activeAccount is bool &&
+             data.officeOwnerUid is string && data.officeOwnerUid.size() >= 1 && data.officeOwnerUid.size() <= 128 &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidOffice(data) {
+      return data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+             isValidEmail(data.ownerEmail) &&
+             isValidBoundedEmailList(data.activeMemberEmails) &&
+             isValidBoundedEmailList(data.receptionAdminEmails) &&
+             isValidBoundedEmailList(data.adminEmails) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidStaff(data) {
+      return data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 80 &&
+             data.shownAs is string && data.shownAs.size() >= 1 && data.shownAs.size() <= 60 &&
+             data.email is string && data.email.size() <= 120 && (data.email.size() == 0 || data.email.size() >= 3) &&
+             data.role in ['admin', 'reception', 'host'] &&
+             (!('designation' in data) || (data.designation is string && data.designation.size() <= 80)) &&
+             (!('department' in data) || (data.department is string && data.department.size() <= 80)) &&
+             (!('floor' in data) || (data.floor is string && data.floor.size() <= 40)) &&
+             data.cabin is string && data.cabin.size() <= 60 &&
+             (!('otherLocation' in data) || (data.otherLocation is string && data.otherLocation.size() <= 120)) &&
+             (!('requiredThings' in data) || (data.requiredThings is string && data.requiredThings.size() <= 200)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 240)) &&
+             data.listOrder is int && data.listOrder >= 0 && data.listOrder <= 9999 &&
+             data.hostListed is bool &&
+             data.activeAccount is bool &&
+             data.uid is string && data.uid.size() <= 128 &&
+             data.officeOwnerUid is string && data.officeOwnerUid.size() >= 1 && data.officeOwnerUid.size() <= 128 &&
+             isValidBoundedEmailList(data.allowedReaderEmails) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidReason(data) {
+      return data.label is string && data.label.size() >= 1 && data.label.size() <= 40 &&
+             data.shown is bool &&
+             data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 999 &&
+             data.officeOwnerUid is string && data.officeOwnerUid.size() >= 1 && data.officeOwnerUid.size() <= 128 &&
+             isValidBoundedEmailList(data.allowedReaderEmails) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidVisit(data) {
+      return data.visitorName is string && data.visitorName.size() >= 1 && data.visitorName.size() <= 100 &&
+             data.visitorMobile is string && data.visitorMobile.size() <= 20 &&
+             data.visitorCompany is string && data.visitorCompany.size() <= 100 &&
+             data.visitorEmail is string && data.visitorEmail.size() <= 120 &&
+             data.get('visitorType', '') is string && data.get('visitorType', '').size() <= 60 &&
+             data.get('visitorJobProfile', '') is string && data.get('visitorJobProfile', '').size() <= 100 &&
+             data.get('remark', '') is string && data.get('remark', '').size() <= 300 &&
+             data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 60 &&
+             data.hostStaffId is string && data.hostStaffId.size() >= 1 && data.hostStaffId.size() <= 64 &&
+             data.hostShownAs is string && data.hostShownAs.size() >= 1 && data.hostShownAs.size() <= 60 &&
+             data.hostEmail is string && data.hostEmail.size() <= 120 &&
+             data.hostCabin is string && data.hostCabin.size() <= 100 &&
+             data.visitNumber is int && data.visitNumber >= 1 && data.visitNumber <= 100000 &&
+             data.status in ['Waiting', 'In meeting', 'Done', 'Denied'] &&
+             data.waitNote is string && data.waitNote.size() <= 120 &&
+             data.remindedCount is int && data.remindedCount >= 0 && data.remindedCount <= 1000 &&
+             data.arrivedAt is timestamp && data.arrivedAt <= request.time &&
+             data.waitStartedAt is timestamp && data.waitStartedAt <= request.time &&
+             (!('meetingStartedAt' in data) || (data.meetingStartedAt is timestamp && data.meetingStartedAt <= request.time)) &&
+             (!('endedAt' in data) || (data.endedAt is timestamp && data.endedAt <= request.time)) &&
+             data.createdByUid is string && data.createdByUid.size() >= 1 &&
+             data.createdByEmail is string &&
+             data.officeOwnerUid is string && data.officeOwnerUid.size() >= 1 &&
+             isValidBoundedEmailList(data.allowedReaderEmails) &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidVisitorProfile(data) {
+      return data.mobile is string && data.mobile.size() <= 20 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.company is string && data.company.size() <= 100 &&
+             data.email is string && data.email.size() <= 120 &&
+             data.get('dob', '') is string && data.get('dob', '').size() <= 20 &&
+             data.get('visitorType', '') is string && data.get('visitorType', '').size() <= 60 &&
+             data.get('visitorJobProfile', '') is string && data.get('visitorJobProfile', '').size() <= 100 &&
+             data.get('remark', '') is string && data.get('remark', '').size() <= 300 &&
+             data.visitCount is int && data.visitCount >= 1 && data.visitCount <= 100000 &&
+             data.lastHostStaffId is string && data.lastHostStaffId.size() <= 64 &&
+             data.lastReason is string && data.lastReason.size() <= 60 &&
+             data.officeOwnerUid is string && data.officeOwnerUid.size() >= 1 &&
+             isValidBoundedEmailList(data.allowedReaderEmails) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function canActOnVisitTransition(officeId, existingData, incomingData) {
+      let recOrAdmin = isReceptionOrAdmin(officeId);
+      let isAssignedHost = existingData.hostEmail == verifiedEmail();
+      let isActor = recOrAdmin || isAssignedHost;
+      let diffKeys = incomingData.diff(existingData).affectedKeys();
+      return !(existingData.status in ['Done', 'Denied']) && (
+        (recOrAdmin &&
+         existingData.status == 'Waiting' &&
+         incomingData.status == 'Waiting' &&
+         incomingData.remindedCount == existingData.remindedCount + 1 &&
+         diffKeys.hasOnly(['remindedCount', 'updatedAt'])) ||
+        (isActor &&
+         existingData.status == 'Waiting' &&
+         incomingData.status == 'In meeting' &&
+         'meetingStartedAt' in incomingData &&
+         diffKeys.hasOnly(['status', 'waitNote', 'meetingStartedAt', 'updatedAt'])) ||
+        (isAssignedHost &&
+         existingData.status == 'Waiting' &&
+         incomingData.status == 'Waiting' &&
+         incomingData.waitNote == 'asked to wait 10 min' &&
+         diffKeys.hasOnly(['waitNote', 'updatedAt'])) ||
+        (isActor &&
+         existingData.status == 'Waiting' &&
+         incomingData.status == 'Denied' &&
+         'endedAt' in incomingData &&
+         diffKeys.hasOnly(['status', 'waitNote', 'endedAt', 'updatedAt'])) ||
+        (isActor &&
+         existingData.status == 'In meeting' &&
+         incomingData.status == 'Done' &&
+         'endedAt' in incomingData &&
+         diffKeys.hasOnly(['status', 'endedAt', 'updatedAt']))
+      );
+    }
+
+    function isValidVisitorDob(data) {
+      return data.visitorMobile is string && data.visitorMobile.size() >= 10 && data.visitorMobile.size() <= 20 &&
+             data.dob is string && data.dob.size() >= 4 && data.dob.size() <= 20 &&
+             data.recordedByUid is string && data.recordedByUid.size() >= 1 && data.recordedByUid.size() <= 128 &&
+             data.createdAt is timestamp && data.createdAt <= request.time;
+    }
+
+    // --- COLLECTION RULES ---
+
+    match /officeMemberships/{membershipId} {
+      allow list: if isVerifiedSignedIn() && (
+        resource.data.email == verifiedEmail() ||
+        resource.data.officeOwnerUid == request.auth.uid
+      );
+      allow get: if isVerifiedSignedIn() && isValidId(membershipId) && (
+        existing().email == verifiedEmail() ||
+        existing().officeOwnerUid == request.auth.uid ||
+        isOfficeAdmin(existing().officeId)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(membershipId) &&
+        isValidMembership(incoming()) &&
+        incoming().keys().hasAll(['officeId', 'officeName', 'staffId', 'email', 'role', 'activeAccount', 'officeOwnerUid', 'updatedAt']) &&
+        incoming().keys().hasOnly(['officeId', 'officeName', 'staffId', 'email', 'role', 'activeAccount', 'officeOwnerUid', 'updatedAt']) &&
+        isOfficeAdmin(incoming().officeId);
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(membershipId) &&
+        isValidMembership(incoming()) &&
+        incoming().officeId == existing().officeId &&
+        incoming().staffId == existing().staffId &&
+        incoming().officeOwnerUid == existing().officeOwnerUid &&
+        isOfficeAdmin(existing().officeId) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['officeName', 'email', 'role', 'activeAccount', 'updatedAt']);
+      allow delete: if isVerifiedSignedIn() && isValidId(membershipId) && isOfficeAdmin(existing().officeId);
+    }
+
+    match /offices/{officeId} {
+      allow list: if isVerifiedSignedIn() && (
+        verifiedEmail() in resource.data.activeMemberEmails ||
+        resource.data.ownerUid == request.auth.uid
+      );
+      allow get: if isVerifiedSignedIn() && isValidId(officeId) && (
+        existing().ownerUid == request.auth.uid ||
+        verifiedEmail() in existing().activeMemberEmails
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(officeId) &&
+        isValidOffice(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().ownerEmail == verifiedEmail() &&
+        verifiedEmail() in incoming().activeMemberEmails &&
+        verifiedEmail() in incoming().adminEmails &&
+        incoming().keys().hasAll(['name', 'ownerUid', 'ownerEmail', 'activeMemberEmails', 'receptionAdminEmails', 'adminEmails', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['name', 'ownerUid', 'ownerEmail', 'activeMemberEmails', 'receptionAdminEmails', 'adminEmails', 'createdAt', 'updatedAt']);
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(officeId) &&
+        isValidOffice(incoming()) &&
+        (existing().ownerUid == request.auth.uid || isOfficeAdmin(officeId)) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().ownerEmail == existing().ownerEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'activeMemberEmails', 'receptionAdminEmails', 'adminEmails', 'updatedAt']);
+      allow delete: if false;
+
+      match /staff/{staffId} {
+        allow list: if isVerifiedSignedIn() && (
+          verifiedEmail() in resource.data.allowedReaderEmails ||
+          resource.data.email == verifiedEmail()
+        );
+        allow get: if isVerifiedSignedIn() && isValidId(staffId) && (
+          isActiveOfficeMember(officeId) ||
+          existing().email == verifiedEmail()
+        );
+        allow create: if isVerifiedSignedIn() &&
+          isValidId(staffId) &&
+          isValidStaff(incoming()) &&
+          incoming().keys().hasAll(['fullName', 'shownAs', 'email', 'role', 'cabin', 'listOrder', 'hostListed', 'activeAccount', 'uid', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['fullName', 'shownAs', 'email', 'role', 'designation', 'department', 'floor', 'cabin', 'otherLocation', 'requiredThings', 'notes', 'listOrder', 'hostListed', 'activeAccount', 'uid', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
+          isOfficeAdmin(officeId);
+        allow update: if isVerifiedSignedIn() &&
+          isValidId(staffId) &&
+          isValidStaff(incoming()) &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().officeOwnerUid == existing().officeOwnerUid && (
+            (isOfficeAdmin(officeId) &&
+             incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'shownAs', 'email', 'role', 'designation', 'department', 'floor', 'cabin', 'otherLocation', 'requiredThings', 'notes', 'listOrder', 'hostListed', 'activeAccount', 'allowedReaderEmails', 'updatedAt'])) ||
+            (existing().email == verifiedEmail() &&
+             existing().activeAccount == true &&
+             (incoming().uid == request.auth.uid || existing().uid == request.auth.uid) &&
+             incoming().diff(existing()).affectedKeys().hasOnly(['uid', 'floor', 'cabin', 'otherLocation', 'requiredThings', 'notes', 'updatedAt']))
+          );
+        allow delete: if isVerifiedSignedIn() && isValidId(staffId) && isOfficeAdmin(officeId);
+      }
+
+      match /reasons/{reasonId} {
+        allow list: if isVerifiedSignedIn() && (
+          verifiedEmail() in resource.data.allowedReaderEmails
+        );
+        allow get: if isVerifiedSignedIn() && isValidId(reasonId) && isActiveOfficeMember(officeId);
+        allow create: if isVerifiedSignedIn() &&
+          isValidId(reasonId) &&
+          isValidReason(incoming()) &&
+          incoming().keys().hasAll(['label', 'shown', 'sortOrder', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['label', 'shown', 'sortOrder', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
+          isOfficeAdmin(officeId);
+        allow update: if isVerifiedSignedIn() &&
+          isValidId(reasonId) &&
+          isValidReason(incoming()) &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().officeOwnerUid == existing().officeOwnerUid &&
+          isOfficeAdmin(officeId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['label', 'shown', 'sortOrder', 'allowedReaderEmails', 'updatedAt']);
+        allow delete: if isVerifiedSignedIn() && isValidId(reasonId) && isOfficeAdmin(officeId);
+      }
+
+      match /visits/{visitId} {
+        allow list: if isVerifiedSignedIn() && (
+          verifiedEmail() in resource.data.allowedReaderEmails
+        );
+        allow get: if isVerifiedSignedIn() && isValidId(visitId) && (
+          verifiedEmail() in existing().allowedReaderEmails &&
+          isActiveOfficeMember(officeId)
+        );
+        allow create: if isVerifiedSignedIn() &&
+          isValidId(visitId) &&
+          isValidVisit(incoming()) &&
+          incoming().remindedCount == 0 &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().createdByEmail == verifiedEmail() &&
+          incoming().keys().hasAll(['visitorName', 'visitorMobile', 'visitorCompany', 'visitorEmail', 'reason', 'hostStaffId', 'hostShownAs', 'hostEmail', 'hostCabin', 'visitNumber', 'status', 'waitNote', 'remindedCount', 'arrivedAt', 'waitStartedAt', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'updatedAt']) &&
+          incoming().keys().hasOnly(['visitorName', 'visitorMobile', 'visitorCompany', 'visitorEmail', 'visitorType', 'visitorJobProfile', 'remark', 'reason', 'hostStaffId', 'hostShownAs', 'hostEmail', 'hostCabin', 'visitNumber', 'status', 'waitNote', 'remindedCount', 'arrivedAt', 'waitStartedAt', 'meetingStartedAt', 'endedAt', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'updatedAt']) && (
+            (incoming().status == 'Waiting' && !('endedAt' in incoming()) && isReceptionOrAdmin(officeId)) ||
+            (incoming().status == 'Done' && isOfficeAdmin(officeId))
+          );
+
+        allow update: if isVerifiedSignedIn() &&
+          isValidId(visitId) &&
+          isValidVisit(incoming()) &&
+          incoming().arrivedAt == existing().arrivedAt &&
+          incoming().waitStartedAt == existing().waitStartedAt &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdByEmail == existing().createdByEmail &&
+          incoming().officeOwnerUid == existing().officeOwnerUid &&
+          isActiveOfficeMember(officeId) && (
+            (isOfficeAdmin(officeId) &&
+             incoming().diff(existing()).affectedKeys().hasOnly(['allowedReaderEmails', 'updatedAt'])) ||
+            canActOnVisitTransition(officeId, existing(), incoming())
+          );
+
+        allow delete: if false;
+      }
+
+      match /visitorProfiles/{mobileId} {
+        allow list: if isVerifiedSignedIn() &&
+          verifiedEmail() in resource.data.allowedReaderEmails &&
+          isReceptionOrAdmin(officeId);
+        allow get: if isVerifiedSignedIn() && isValidId(mobileId) && (
+          verifiedEmail() in existing().allowedReaderEmails &&
+          isReceptionOrAdmin(officeId)
+        );
+        allow create: if isVerifiedSignedIn() &&
+          isValidId(mobileId) &&
+          isValidVisitorProfile(incoming()) &&
+          incoming().keys().hasAll(['mobile', 'name', 'company', 'email', 'visitCount', 'lastHostStaffId', 'lastReason', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['mobile', 'name', 'company', 'email', 'dob', 'visitorType', 'visitorJobProfile', 'remark', 'visitCount', 'lastHostStaffId', 'lastReason', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
+          isReceptionOrAdmin(officeId);
+        allow update: if isVerifiedSignedIn() &&
+          isValidId(mobileId) &&
+          isValidVisitorProfile(incoming()) &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().officeOwnerUid == existing().officeOwnerUid &&
+          isReceptionOrAdmin(officeId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['mobile', 'name', 'company', 'email', 'dob', 'visitorType', 'visitorJobProfile', 'remark', 'visitCount', 'lastHostStaffId', 'lastReason', 'allowedReaderEmails', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      match /visitorDob/{dobId} {
+        allow read, update, delete: if false;
+        allow create: if isVerifiedSignedIn() &&
+          isValidId(dobId) &&
+          isValidVisitorDob(incoming()) &&
+          incoming().recordedByUid == request.auth.uid &&
+          incoming().keys().hasAll(['visitorMobile', 'dob', 'recordedByUid', 'createdAt']) &&
+          incoming().keys().hasOnly(['visitorMobile', 'dob', 'recordedByUid', 'createdAt']) &&
+          isReceptionOrAdmin(officeId);
+      }
+    }
+  }
+}

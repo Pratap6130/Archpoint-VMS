@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">ArchPoint Visitors</string>
+    <string name="staff_sign_in_subtitle">Staff visitor desk · ArchPoint</string>
+    <string name="sign_in_with_google">Sign in with Google</string>
+    <string name="sign_out">Sign out</string>
+    <string name="turn_on_alerts">Turn on alerts</string>
+    <string name="tab_reception">Reception</string>
+    <string name="tab_my_visitors">My desk</string>
+    <string name="tab_visitor_log">Log</string>
+    <string name="tab_admin">Admin</string>
+    <string name="tab_profile">Profile</string>
+    <string name="channel_visitors_name">Visitors</string>
+    <string name="channel_visitors_desc">High-priority arrival and reply alerts for ArchPoint staff</string>
+    <string name="channel_service_name">Live Desk Sync</string>
+    <string name="channel_service_desc">Keeps ArchPoint visitor alerts active when your screen is locked</string>
+</resources>
