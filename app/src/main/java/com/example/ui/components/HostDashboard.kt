@@ -37,6 +37,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.Business
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Chair
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -47,8 +48,10 @@ import androidx.compose.material.icons.rounded.EventAvailable
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MeetingRoom
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -84,6 +87,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.data.calendar.GoogleCalendarEventItem
 import com.example.data.model.Appointment
 import com.example.data.model.AppointmentStatus
 import com.example.data.model.AvailabilityTone
@@ -95,6 +99,7 @@ import com.example.ui.theme.ArchAmberBright
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.MeetingBlueBright
 import com.example.ui.theme.archPointStatusColors
+import com.example.ui.viewmodel.GoogleCalendarUiState
 import com.example.ui.viewmodel.HostClientSummary
 import com.example.ui.viewmodel.MainViewModel
 import com.example.util.DeskFormatters
@@ -128,6 +133,7 @@ fun HostDashboard(
   nowMillis: Long,
   inFlightVisitIds: Set<String> = emptySet(),
   appointments: List<Appointment> = emptyList(),
+  calendarState: GoogleCalendarUiState = GoogleCalendarUiState(),
   isBusy: Boolean = false,
   onUpdateAvailability: (HostAvailability) -> Unit,
   onSendIn: (Visit, String) -> Unit,
@@ -148,6 +154,8 @@ fun HostDashboard(
     assignedHostStaff: StaffMember?,
   ) -> Unit = { _, _, _, _, _, _, _, _, _, _, _ -> },
   onUpdateAppointmentStatus: (Appointment, AppointmentStatus) -> Unit = { _, _ -> },
+  onConnectOrSyncCalendar: () -> Unit = {},
+  onSyncAppointmentToCalendar: (Appointment) -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val status = archPointStatusColors()
@@ -233,6 +241,16 @@ fun HostDashboard(
         .sortedByDescending { it.scheduledAtMillis }
         .take(15)
     }
+  val externalCalendarEvents =
+    remember(calendarState.events, myAppointments, todayStart) {
+      val syncedEventIds = myAppointments.mapNotNull { it.calendarEventId.takeIf { id -> id.isNotBlank() } }.toSet()
+      val apptIds = myAppointments.mapNotNull { it.id.takeIf { id -> id.isNotBlank() } }.toSet()
+      calendarState.events.filter { ev ->
+        ev.endMillis >= todayStart &&
+          ev.id !in syncedEventIds &&
+          (ev.archpointAppointmentId.isBlank() || ev.archpointAppointmentId !in apptIds)
+      }
+    }
   val myClients =
     remember(myVisits, cleanEmail, currentStaff?.id) {
       MainViewModel.buildHostClients(
@@ -294,6 +312,16 @@ fun HostDashboard(
     if (cleanPhone.length >= 7) {
       try {
         context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$cleanPhone")))
+      } catch (_: Exception) {
+      }
+    }
+  }
+
+  val openCalendarUrl: (String) -> Unit = { url ->
+    val cleanUrl = url.trim()
+    if (cleanUrl.startsWith("https://") || cleanUrl.startsWith("http://")) {
+      try {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(cleanUrl)))
       } catch (_: Exception) {
       }
     }
@@ -659,12 +687,13 @@ fun HostDashboard(
 
       // 2. Host-Only Feed Selector (Live Notifications vs. Upcoming Appointments vs. Clients vs. History)
       item(key = "feed_selector") {
+        val totalApptCount = upcomingAppts.size + externalCalendarEvents.size
         GlassSegmentedControl(
           options =
             listOf(
               HostNotificationSection.LIVE_NOTIFICATIONS to
                 if (activeNotificationsCount > 0) "Live ($activeNotificationsCount)" else "Live",
-              HostNotificationSection.UPCOMING_APPTS to "Appts (${upcomingAppts.size})",
+              HostNotificationSection.UPCOMING_APPTS to "Appts ($totalApptCount)",
               HostNotificationSection.MY_CLIENTS to "Clients (${myClients.size})",
               HostNotificationSection.MY_HISTORY to "History (${myAllCompleted.size})",
             ),
@@ -678,7 +707,7 @@ fun HostDashboard(
       }
 
       if (feedSection == HostNotificationSection.LIVE_NOTIFICATIONS) {
-        if (upcomingAppts.isNotEmpty()) {
+        if (upcomingAppts.isNotEmpty() || externalCalendarEvents.isNotEmpty()) {
           item(key = "upcoming_appt_preview") {
             GlassInnerSurface(
               modifier = Modifier.fillMaxWidth(),
@@ -702,7 +731,7 @@ fun HostDashboard(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                      text = "UPCOMING FOR YOU (${upcomingAppts.size})",
+                      text = "UPCOMING FOR YOU (${upcomingAppts.size + externalCalendarEvents.size})",
                       style = MaterialTheme.typography.labelSmall,
                       color = MaterialTheme.colorScheme.primary,
                     )
@@ -749,6 +778,38 @@ fun HostDashboard(
                       text = "$dayLabel · ${appt.scheduledTimeLabel}",
                       containerColor = MaterialTheme.colorScheme.primaryContainer,
                       contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                  }
+                }
+                if (externalCalendarEvents.isNotEmpty()) {
+                  val nextCal = externalCalendarEvents.first()
+                  val calDay = DeskFormatters.formatAppointmentDayLabel(nextCal.startDayIso, nowMillis)
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                  ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                      Icon(
+                        imageVector = Icons.Rounded.CalendarMonth,
+                        contentDescription = "Google Calendar event",
+                        tint = status.meetingText,
+                        modifier = Modifier.size(15.dp),
+                      )
+                      Spacer(Modifier.width(6.dp))
+                      Text(
+                        text = nextCal.summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    StatusPill(
+                      text = "$calDay · ${nextCal.startTimeLabel}",
+                      containerColor = status.meetingContainer,
+                      contentColor = status.meetingOnContainer,
                     )
                   }
                 }
@@ -851,6 +912,14 @@ fun HostDashboard(
           }
         }
       } else if (feedSection == HostNotificationSection.UPCOMING_APPTS) {
+        item(key = "appts_calendar_sync_card") {
+          HostCalendarSyncCard(
+            userEmail = cleanEmail,
+            calendarState = calendarState,
+            onConnectOrSync = onConnectOrSyncCalendar,
+          )
+        }
+
         item(key = "appts_header") {
           GlassCard(contentPadding = PaddingValues(14.dp)) {
             Row(
@@ -865,7 +934,7 @@ fun HostDashboard(
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                  text = "Visible only to you and Reception for arrival check-in",
+                  text = "Visible to you, Reception, and synced to your Google Calendar",
                   style = MaterialTheme.typography.bodySmall,
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -878,7 +947,7 @@ fun HostDashboard(
                 },
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                modifier = Modifier.height(44.dp).testTag("host_appts_tab_book_button"),
+                modifier = Modifier.height(48.dp).testTag("host_appts_tab_book_button"),
               ) {
                 Icon(Icons.Rounded.EventAvailable, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
@@ -896,7 +965,7 @@ fun HostDashboard(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
               ) {
-                Text("No upcoming appointments", style = MaterialTheme.typography.titleMedium)
+                Text("No upcoming ArchPoint appointments", style = MaterialTheme.typography.titleMedium)
                 Text(
                   "Schedule a client or vendor visit so Reception sees the booking when they arrive.",
                   style = MaterialTheme.typography.bodyMedium,
@@ -914,7 +983,10 @@ fun HostDashboard(
             HostAppointmentCard(
               appointment = appt,
               nowMillis = nowMillis,
+              isCalendarSyncing = calendarState.isSyncing || calendarState.isConnecting,
               onDialVisitor = { dialVisitor(appt.visitorMobile) },
+              onSyncToCalendar = { onSyncAppointmentToCalendar(appt) },
+              onOpenCalendarLink = { openCalendarUrl(appt.calendarHtmlLink) },
               onReschedule = {
                 editingAppointment = appt
                 showAppointmentSheet = true
@@ -923,6 +995,40 @@ fun HostDashboard(
               onCancelAppointment = { onUpdateAppointmentStatus(appt, AppointmentStatus.CANCELLED) },
               modifier = Modifier.animateItem(),
             )
+          }
+        }
+
+        if (calendarState.isConnected) {
+          item(key = "gcal_schedule_header") {
+            Text(
+              text = "GOOGLE CALENDAR SCHEDULE (${externalCalendarEvents.size})",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+          if (externalCalendarEvents.isEmpty()) {
+            item(key = "gcal_schedule_empty") {
+              GlassInnerSurface(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                  text = "No extra external events on $cleanEmail in the next 3 weeks.",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  modifier = Modifier.padding(14.dp),
+                )
+              }
+            }
+          } else {
+            items(
+              items = externalCalendarEvents,
+              key = { ev -> "gcal_${ev.id}" },
+            ) { ev ->
+              GoogleCalendarEventCard(
+                event = ev,
+                nowMillis = nowMillis,
+                onOpenLink = { openCalendarUrl(ev.htmlLink) },
+                modifier = Modifier.animateItem(),
+              )
+            }
           }
         }
 
@@ -1785,17 +1891,174 @@ private fun HostHistoryNotificationRow(
 }
 
 @Composable
+private fun HostCalendarSyncCard(
+  userEmail: String,
+  calendarState: GoogleCalendarUiState,
+  onConnectOrSync: () -> Unit,
+) {
+  val status = archPointStatusColors()
+  GlassCard(
+    modifier = Modifier.testTag("host_calendar_sync_card"),
+    contentPadding = PaddingValues(14.dp),
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+        Icon(
+          imageVector = Icons.Rounded.CalendarMonth,
+          contentDescription = "Google Calendar",
+          tint = if (calendarState.isConnected) status.freeText else MaterialTheme.colorScheme.primary,
+          modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = if (calendarState.isConnected) "Google Calendar Connected" else "Google Calendar",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+          )
+          Text(
+            text =
+              if (calendarState.isConnected) {
+                "${calendarState.connectedEmail.ifBlank { userEmail }} · ${calendarState.events.size} upcoming events"
+              } else {
+                "Connect ${userEmail.ifBlank { "Google account" }} to view & sync meetings"
+              },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+      }
+      Spacer(Modifier.width(8.dp))
+      OutlinedButton(
+        onClick = onConnectOrSync,
+        enabled = !calendarState.isConnecting && !calendarState.isSyncing,
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        modifier = Modifier.height(48.dp).testTag("host_calendar_connect_button"),
+      ) {
+        if (calendarState.isConnecting || calendarState.isSyncing) {
+          CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+          Spacer(Modifier.width(6.dp))
+          Text(if (calendarState.isConnecting) "Connecting" else "Syncing")
+        } else {
+          Icon(
+            imageVector = if (calendarState.isConnected) Icons.Rounded.Sync else Icons.Rounded.CalendarMonth,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(Modifier.width(6.dp))
+          Text(if (calendarState.isConnected) "Sync" else "Connect")
+        }
+      }
+    }
+    if (!calendarState.errorMessage.isNullOrBlank()) {
+      Text(
+        text = calendarState.errorMessage,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.error,
+      )
+    }
+  }
+}
+
+@Composable
+private fun GoogleCalendarEventCard(
+  event: GoogleCalendarEventItem,
+  nowMillis: Long,
+  onOpenLink: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val status = archPointStatusColors()
+  val dayLabel = DeskFormatters.formatAppointmentDayLabel(event.startDayIso, nowMillis)
+  GlassInnerSurface(
+    modifier = modifier.fillMaxWidth().testTag("host_gcal_event_${event.id}"),
+    borderColor = status.meetingText.copy(alpha = 0.35f),
+  ) {
+    Column(
+      modifier = Modifier.fillMaxWidth().padding(12.dp),
+      verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        StatusPill(
+          text = "$dayLabel · ${event.startTimeLabel}",
+          containerColor = status.meetingContainer,
+          contentColor = status.meetingOnContainer,
+        )
+        StatusPill(
+          text = "Google Calendar",
+          containerColor = MaterialTheme.colorScheme.secondaryContainer,
+          contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+      }
+      Text(
+        text = event.summary,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+      )
+      val meta =
+        listOfNotNull(
+          event.location.takeIf { it.isNotBlank() },
+          if (event.attendeesCount > 0) "${event.attendeesCount} attendees" else null,
+        ).joinToString(" · ")
+      if (meta.isNotBlank()) {
+        Text(
+          text = meta,
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+      if (event.htmlLink.isNotBlank()) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.End,
+        ) {
+          TextButton(
+            onClick = onOpenLink,
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+            modifier = Modifier.height(48.dp).testTag("host_gcal_open_${event.id}"),
+          ) {
+            Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Open in Calendar")
+          }
+        }
+      }
+    }
+  }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun HostAppointmentCard(
   appointment: Appointment,
   nowMillis: Long,
+  isCalendarSyncing: Boolean = false,
   onDialVisitor: () -> Unit,
+  onSyncToCalendar: () -> Unit = {},
+  onOpenCalendarLink: () -> Unit = {},
   onReschedule: () -> Unit,
   onMarkCompleted: () -> Unit,
   onCancelAppointment: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
+  val status = archPointStatusColors()
   val dayLabel = DeskFormatters.formatAppointmentDayLabel(appointment.scheduledDateIso, nowMillis)
   val isToday = dayLabel == "Today"
+  val hasCalendarEvent = appointment.calendarEventId.isNotBlank()
   val hasDialablePhone =
     appointment.visitorMobile.filter { it.isDigit() }.length >= 10 &&
       appointment.visitorMobile != "919999999999"
@@ -1817,7 +2080,11 @@ private fun HostAppointmentCard(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.weight(1f),
+      ) {
         StatusPill(
           text = "$dayLabel · ${appointment.scheduledTimeLabel}",
           containerColor =
@@ -1832,6 +2099,13 @@ private fun HostAppointmentCard(
           containerColor = MaterialTheme.colorScheme.secondaryContainer,
           contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
         )
+        if (hasCalendarEvent) {
+          StatusPill(
+            text = "On Calendar",
+            containerColor = status.freeContainer,
+            contentColor = status.freeOnContainer,
+          )
+        }
       }
       if (hasDialablePhone) {
         IconButton(
@@ -1874,35 +2148,66 @@ private fun HostAppointmentCard(
       )
     }
 
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-      OutlinedButton(
-        onClick = onReschedule,
-        shape = RoundedCornerShape(10.dp),
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-        modifier = Modifier.weight(1f).height(42.dp).testTag("host_appt_edit_${appointment.id}"),
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
-        Spacer(Modifier.width(4.dp))
-        Text("Reschedule", maxLines = 1)
+        if (hasCalendarEvent && appointment.calendarHtmlLink.isNotBlank()) {
+          OutlinedButton(
+            onClick = onOpenCalendarLink,
+            shape = RoundedCornerShape(10.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.weight(1f).height(48.dp).testTag("host_appt_open_gcal_${appointment.id}"),
+          ) {
+            Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Open Calendar", maxLines = 1)
+          }
+        } else {
+          OutlinedButton(
+            onClick = onSyncToCalendar,
+            enabled = !isCalendarSyncing,
+            shape = RoundedCornerShape(10.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.weight(1f).height(48.dp).testTag("host_appt_sync_gcal_${appointment.id}"),
+          ) {
+            Icon(Icons.Rounded.CalendarMonth, contentDescription = null, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(4.dp))
+            Text(if (hasCalendarEvent) "Re-sync GCal" else "Add to GCal", maxLines = 1)
+          }
+        }
+        OutlinedButton(
+          onClick = onReschedule,
+          shape = RoundedCornerShape(10.dp),
+          contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+          modifier = Modifier.weight(1f).height(48.dp).testTag("host_appt_edit_${appointment.id}"),
+        ) {
+          Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+          Spacer(Modifier.width(4.dp))
+          Text("Reschedule", maxLines = 1)
+        }
       }
-      OutlinedButton(
-        onClick = onMarkCompleted,
-        shape = RoundedCornerShape(10.dp),
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-        modifier = Modifier.weight(0.9f).height(42.dp).testTag("host_appt_done_${appointment.id}"),
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        Text("Done", maxLines = 1)
-      }
-      OutlinedButton(
-        onClick = onCancelAppointment,
-        shape = RoundedCornerShape(10.dp),
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-        modifier = Modifier.weight(0.9f).height(42.dp).testTag("host_appt_cancel_${appointment.id}"),
-      ) {
-        Text("Cancel", maxLines = 1)
+        OutlinedButton(
+          onClick = onMarkCompleted,
+          shape = RoundedCornerShape(10.dp),
+          contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+          modifier = Modifier.weight(1f).height(48.dp).testTag("host_appt_done_${appointment.id}"),
+        ) {
+          Text("Mark Done", maxLines = 1)
+        }
+        OutlinedButton(
+          onClick = onCancelAppointment,
+          shape = RoundedCornerShape(10.dp),
+          contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+          modifier = Modifier.weight(1f).height(48.dp).testTag("host_appt_cancel_${appointment.id}"),
+        ) {
+          Text("Cancel", maxLines = 1)
+        }
       }
     }
   }

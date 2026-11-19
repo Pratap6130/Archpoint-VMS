@@ -31,8 +31,9 @@ class VisitorAnalyticsTest {
 
   private val seededVisits: List<Visit> =
     ArchPointSeedData.pastVisits.map { past ->
-      val hostId = ArchPointSeedData.hostSpecIdForName(past.personToMeet)
-      val host = seededStaff.firstOrNull { it.id == hostId }
+      val isOtherPerson = past.personToMeet.trim().equals("Other", ignoreCase = true)
+      val hostId = if (isOtherPerson) "other" else ArchPointSeedData.hostSpecIdForName(past.personToMeet)
+      val host = if (isOtherPerson) null else seededStaff.firstOrNull { it.id == hostId }
       val ts = past.parseSubmittedTimestamp()
       Visit(
         id = past.docId,
@@ -45,7 +46,7 @@ class VisitorAnalyticsTest {
         remark = past.remark,
         reason = past.resolvedReason(),
         hostStaffId = hostId,
-        hostShownAs = host?.shownAs ?: past.personToMeet,
+        hostShownAs = if (isOtherPerson) "Other (2nd Floor)" else (host?.shownAs ?: past.personToMeet),
         status = "Done",
         arrivedAt = ts,
         waitStartedAt = ts,
@@ -54,13 +55,13 @@ class VisitorAnalyticsTest {
     }
 
   @Test
-  fun aggregatesAllFortyThreePastVisitsByDepartmentAndTimeOfDay() {
+  fun aggregatesAllFiftyFivePastVisitsByDepartmentAndTimeOfDay() {
     val report = VisitorAnalytics.buildReport(visits = seededVisits, staff = seededStaff)
 
-    assertEquals(43, report.totalVisits)
+    assertEquals(55, report.totalVisits)
     assertNotNull(report.topDepartment)
     assertEquals("Management", report.topDepartment?.department)
-    assertTrue((report.topDepartment?.totalVisits ?: 0) >= 30)
+    assertTrue((report.topDepartment?.totalVisits ?: 0) >= 35)
 
     assertNotNull(report.peakHour)
     assertNotNull(report.peakPeriod)
@@ -68,6 +69,7 @@ class VisitorAnalyticsTest {
     assertTrue(report.departmentSummaries.any { it.department == "Arch Point Group" })
     assertTrue(report.departmentSummaries.any { it.department == "Operations" })
     assertTrue(report.departmentSummaries.any { it.department == "HR" })
+    assertTrue(report.departmentSummaries.any { it.department == "General" })
     assertTrue(report.reasonBreakdown.isNotEmpty())
   }
 
@@ -80,7 +82,7 @@ class VisitorAnalyticsTest {
         departmentFilter = "Arch Point Group",
       )
 
-    assertEquals(6, report.totalVisits)
+    assertEquals(12, report.totalVisits)
     assertEquals(1, report.departmentSummaries.size)
     assertEquals("Arch Point Group", report.departmentSummaries.first().department)
     // Filter chips list still contains all departments from full dataset

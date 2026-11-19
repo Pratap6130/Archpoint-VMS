@@ -76,14 +76,8 @@ data class SeedPastVisitSpec(
         timeZone = TimeZone.getTimeZone("Asia/Kolkata")
       }
     val parsed = runCatching { fmt.parse(submittedAtIso) }.getOrNull()
-    val nowMs = System.currentTimeMillis() - 60_000L
-    val safeDate =
-      if (parsed != null && parsed.time <= nowMs) {
-        parsed
-      } else {
-        Date(nowMs - (45 - rowNumber) * 60_000L)
-      }
-    return Timestamp(safeDate)
+    val fallbackDate = Date(System.currentTimeMillis() - (60 - rowNumber).coerceAtLeast(1) * 60_000L)
+    return Timestamp(parsed ?: fallbackDate)
   }
 }
 
@@ -149,6 +143,7 @@ object ArchPointSeedData {
   val defaultReasons =
     listOf(
       "Meeting",
+      "Client",
       "Vendor",
       "Site Vendor",
       "Connection",
@@ -379,5 +374,17 @@ object ArchPointSeedData {
       SeedPastVisitSpec(41, "BERl8WK", "2026-11-12 10:33:03", "Soumya shrivastva", "Itself pycrashitci", "918619342632", "", "", "Past life regression expert", "EKASA", "Ar. Poonam Jain", ""),
       SeedPastVisitSpec(42, "vX998Qg", "2026-11-13 10:38:41", "Tarun Soni", "Own", "919166667550", "", "", "Owner", "Other", "Ar. Amit Khandelwal", "For his plot construction"),
       SeedPastVisitSpec(43, "kboYAaZ", "2026-11-16 11:08:13", "Harshvardhan singh", "Git uni", "918112280766", "", "2006-09-09", "Full Stack Developer", "Interview Candidate", "Vartika Maheshwari", "Interview"),
+      SeedPastVisitSpec(44, "2jWbXKV", "2026-11-17 09:14:05", "Naresh Ji", "Naresh", "918952072111", "", "1987-03-21", "", "EKASA", "Ar. Poonam Jain", ""),
+      SeedPastVisitSpec(45, "laG06ak", "2026-11-17 09:29:58", "Sahil Rewani", "Telesia, shree Balaji windows", "917375858968", "infoshreebalajiwindows@gmail.com", "", "MD", "Vendor", "Ar. Poonam Jain", "Vendor meeting"),
+      SeedPastVisitSpec(46, "vXZ0L2X", "2026-11-17 10:04:08", "Himanshu +2", "Asianpaint", "919999999999", "", "", "Sales Head", "Vendor", "Ar. Poonam Jain", "Meeting appointment"),
+      SeedPastVisitSpec(47, "4a61qBb", "2026-11-17 10:50:30", "Mr. Ayush", "Aayush", "919999999999", "", "", "", "Vendor", "Ar. Amit Khandelwal", ""),
+      SeedPastVisitSpec(48, "WJWegYe", "2026-11-17 10:51:29", "Vikas Sharma", "Vista", "919910661842", "", "", "Area Sales Manager", "Vendor", "Ar. Poonam Jain", ""),
+      SeedPastVisitSpec(49, "X5aOoY4", "2026-11-17 12:20:04", "Vimal", "Vimal", "919828452777", "", "", "Site", "Other", "Ar. Amit Khandelwal", "Site"),
+      SeedPastVisitSpec(50, "Z97ep1o", "2026-11-18 06:42:13", "Rahul", "Atalon", "917023966600", "", "", "Manager", "Vendor", "Ar. Amit Khandelwal", "To meet sir"),
+      SeedPastVisitSpec(51, "Dq8W4Jq", "2026-11-18 06:57:06", "Himanshu Ji +1", "HIMANSHI JI", "919999999999", "", "", "", "Client", "Ar. Amit Khandelwal", "Himanshu Ji with his wife"),
+      SeedPastVisitSpec(52, "6DlYlyP", "2026-11-19 06:58:25", "PK chouhan", "HFN", "919928154360", "", "", "", "EKASA", "Ar. Poonam Jain", "Direct visit for Seating"),
+      SeedPastVisitSpec(53, "aOLJN9E", "2026-11-19 07:31:56", "Arjun Ji", "Arjun Ji", "919999999999", "", "", "", "Client", "Other", "Directly to 2nd floor to meet dhanshree"),
+      SeedPastVisitSpec(54, "PRxQ98P", "2026-11-19 08:00:45", "Rajen", "Rajen Client", "919521900063", "", "", "", "Vendor", "Ar. Amit Khandelwal", ""),
+      SeedPastVisitSpec(55, "NqjNBlW", "2026-11-19 08:48:24", "Vijendra", "Smart interiors solution", "918058158150", "", "", "Bda", "Vendor", "Ar. Poonam Jain", "Vendor meeting"),
     )
 }

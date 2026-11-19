@@ -24,10 +24,13 @@ class ArchPointSeedAndFormatterTest {
   }
 
   @Test
-  fun pastVisitsCatalogContainsAllFortyThreeRecords() {
-    assertEquals(43, ArchPointSeedData.pastVisits.size)
+  fun pastVisitsCatalogContainsAllFiftyFiveRecords() {
+    assertEquals(55, ArchPointSeedData.pastVisits.size)
     assertEquals("Mr. Kishan", ArchPointSeedData.pastVisits.first().visitorName)
-    assertEquals("Harshvardhan singh", ArchPointSeedData.pastVisits.last().visitorName)
+    assertEquals("Vijendra", ArchPointSeedData.pastVisits.last().visitorName)
+    assertEquals("PK chouhan", ArchPointSeedData.pastVisits.first { it.submissionId == "6DlYlyP" }.visitorName)
+    assertEquals("Client", ArchPointSeedData.pastVisits.first { it.submissionId == "aOLJN9E" }.visitorType)
+    assertTrue(ArchPointSeedData.defaultReasons.contains("Client"))
     assertTrue(ArchPointSeedData.pastVisits.all { it.resolvedReason().isNotBlank() })
   }
 
@@ -51,5 +54,57 @@ class ArchPointSeedAndFormatterTest {
     assertTrue(csv.contains("'=SUM(A1)"))
     assertTrue(csv.contains("Director"))
     assertTrue(csv.contains("Gift"))
+  }
+
+  @Test
+  fun visitorLogFilterIncludesAllHistoricalVisitsWhenRangeIsOpenAndFiltersSearch() {
+    val allSeededVisits =
+      ArchPointSeedData.pastVisits.map { past ->
+        val ts = past.parseSubmittedTimestamp()
+        Visit(
+          id = past.docId,
+          visitorName = past.visitorName,
+          visitorCompany = past.company,
+          visitorMobile = past.phone,
+          visitorJobProfile = past.jobProfile,
+          reason = past.resolvedReason(),
+          remark = past.remark,
+          hostShownAs = past.personToMeet,
+          status = "Done",
+          arrivedAt = ts,
+          waitStartedAt = ts,
+          endedAt = ts,
+        )
+      }
+
+    // Open range (fromMillis = 0L, toMillis = 0L) includes all 55 Oct-Nov 2026 visits regardless of phone clock
+    val futurePhoneNowMillis = 1_900_000_000_000L // Year 2030
+    val allMatched =
+      com.example.ui.screens.filterVisitorLogVisits(
+        visits = allSeededVisits,
+        fromMillis = 0L,
+        toMillis = 0L,
+        searchQuery = "",
+        nowMillis = futurePhoneNowMillis,
+      )
+    assertEquals(55, allMatched.size)
+
+    // Verify authentic CSV month/year is preserved (Oct/Nov 2026)
+    val firstDateLabel = DeskFormatters.formatCsvDate(allSeededVisits.first().arrivedAt?.toDate())
+    val lastDateLabel = DeskFormatters.formatCsvDate(allSeededVisits.last().arrivedAt?.toDate())
+    assertEquals("2026-10-31", firstDateLabel)
+    assertEquals("2026-11-19", lastDateLabel)
+
+    // Narrow query matches across remark, company, or name
+    val diwaliMatches =
+      com.example.ui.screens.filterVisitorLogVisits(
+        visits = allSeededVisits,
+        fromMillis = 0L,
+        toMillis = 0L,
+        searchQuery = "Elite window",
+        nowMillis = futurePhoneNowMillis,
+      )
+    assertEquals(1, diwaliMatches.size)
+    assertEquals("Nayan", diwaliMatches.first().visitorName)
   }
 }

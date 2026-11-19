@@ -515,6 +515,91 @@ test("Admin manages staff & past Done visits; Reception cannot modify staff; Hos
       })
   );
 
+  // Admin can import historical Done visits with explicit CSV timestamps (even if ahead of request.time)
+  // and later update allowedReaderEmails when adding staff, while Reception cannot forge future Waiting visits
+  const futureCsvDate = new Date(Date.now() + 86400000 * 30);
+  await assertSucceeds(
+    adminDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("visits")
+      .doc("visit_past_csv_future_clock")
+      .set({
+        visitorName: "Vijendra",
+        visitorMobile: "918058158150",
+        visitorCompany: "Smart interiors solution",
+        visitorEmail: "",
+        visitorType: "Vendor",
+        visitorJobProfile: "Bda",
+        remark: "Vendor meeting",
+        reason: "Vendor",
+        hostStaffId: "staff_archpoint_01",
+        hostShownAs: "Poonam Ma'am",
+        hostEmail: "",
+        hostCabin: "Poonam Ma'am Seating",
+        visitNumber: 1,
+        status: "Done",
+        waitNote: "Past entry",
+        remindedCount: 0,
+        arrivedAt: futureCsvDate,
+        waitStartedAt: futureCsvDate,
+        endedAt: futureCsvDate,
+        createdByUid: ADMIN_UID,
+        createdByEmail: ADMIN_EMAIL,
+        officeOwnerUid: ADMIN_UID,
+        allowedReaderEmails: [ADMIN_EMAIL, RECEPTION_EMAIL],
+        updatedAt: now,
+      })
+  );
+  await assertSucceeds(
+    adminDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("visits")
+      .doc("visit_past_csv_future_clock")
+      .update({
+        allowedReaderEmails: [ADMIN_EMAIL, RECEPTION_EMAIL, HOST_EMAIL],
+        updatedAt: now,
+      })
+  );
+  await assertSucceeds(
+    adminDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("visits")
+      .doc("visit_past_csv_future_clock")
+      .delete()
+  );
+  await assertFails(
+    receptionDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("visits")
+      .doc("visit_future_waiting_nope")
+      .set({
+        visitorName: "Future Spoof",
+        visitorMobile: "9829012345",
+        visitorCompany: "Test",
+        visitorEmail: "",
+        reason: "Meeting",
+        hostStaffId: "staff_amit",
+        hostShownAs: "Amit Sir",
+        hostEmail: HOST_EMAIL,
+        hostCabin: "Amit cabin",
+        visitNumber: 1,
+        status: "Waiting",
+        waitNote: "",
+        remindedCount: 0,
+        arrivedAt: futureCsvDate,
+        waitStartedAt: futureCsvDate,
+        createdByUid: RECEPTION_UID,
+        createdByEmail: RECEPTION_EMAIL,
+        officeOwnerUid: ADMIN_UID,
+        allowedReaderEmails: [ADMIN_EMAIL, RECEPTION_EMAIL, HOST_EMAIL],
+        updatedAt: now,
+      })
+  );
+
   // Host (and any active staff) can update own profile (name, designation, photoUrl, seating, requiredThings, notes, availabilityStatus)
   await assertSucceeds(
     hostDb
@@ -608,6 +693,65 @@ test("Admin manages staff & past Done visits; Reception cannot modify staff; Hos
       .where("allowedReaderEmails", "array-contains", HOST_EMAIL)
       .get()
   );
+
+  // Reception & Admin can create visitorProfiles; only Admin can delete visits or visitorProfiles
+  const profileRef = adminDb
+    .collection("offices")
+    .doc(OFFICE_ID)
+    .collection("visitorProfiles")
+    .doc("919928789771");
+  await assertSucceeds(
+    profileRef.set({
+      mobile: "919928789771",
+      name: "Mr. Kishan",
+      company: "BNI Shri Raghunath Construction",
+      email: "",
+      dob: "",
+      visitorType: "Connection",
+      visitorJobProfile: "Director",
+      remark: "Gift",
+      visitCount: 1,
+      lastHostStaffId: "staff_amit",
+      lastReason: "Connection",
+      officeOwnerUid: ADMIN_UID,
+      allowedReaderEmails: [ADMIN_EMAIL, RECEPTION_EMAIL],
+      createdAt: past,
+      updatedAt: now,
+    })
+  );
+  await assertFails(
+    receptionDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("visits")
+      .doc("visit_past_12")
+      .delete()
+  );
+  await assertFails(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("visits")
+      .doc("visit_past_12")
+      .delete()
+  );
+  await assertFails(
+    receptionDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("visitorProfiles")
+      .doc("919928789771")
+      .delete()
+  );
+  await assertSucceeds(
+    adminDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("visits")
+      .doc("visit_past_12")
+      .delete()
+  );
+  await assertSucceeds(profileRef.delete());
 });
 
 test("PR module enforces Admin/Reception workspace visibility, Host owner-only privacy, and Admin-only delete", async () => {
@@ -988,6 +1132,44 @@ test("Appointment booking allows Host self-booking and Reception/Admin office-wi
       .update({
         status: "Completed",
         updatedAt: new Date(Date.now() - 400),
+      })
+  );
+
+  await assertSucceeds(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_host_self")
+      .update({
+        calendarEventId: "gcal_evt_123456",
+        calendarHtmlLink: "https://calendar.google.com/calendar/event?eid=123456",
+        calendarSyncedEmail: HOST_EMAIL,
+        updatedAt: new Date(Date.now() - 350),
+      })
+  );
+  await assertSucceeds(
+    receptionDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_1")
+      .update({
+        calendarEventId: "gcal_evt_rec_999",
+        calendarHtmlLink: "https://calendar.google.com/calendar/event?eid=999",
+        calendarSyncedEmail: RECEPTION_EMAIL,
+        updatedAt: new Date(Date.now() - 300),
+      })
+  );
+  await assertFails(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_host_self")
+      .update({
+        calendarEventId: "x".repeat(129),
+        updatedAt: new Date(Date.now() - 250),
       })
   );
 

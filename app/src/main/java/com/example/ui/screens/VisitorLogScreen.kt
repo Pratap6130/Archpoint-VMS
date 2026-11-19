@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,16 +22,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CalendarToday
+import androidx.compose.material.icons.rounded.Clear
+import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -67,8 +72,40 @@ import java.io.File
 import java.util.Date
 
 private enum class LogViewMode {
-  ANALYTICS,
   RECORDS,
+  ANALYTICS,
+}
+
+private enum class LogDatePreset {
+  LAST_7D,
+  LAST_30D,
+  ALL,
+}
+
+fun filterVisitorLogVisits(
+  visits: List<Visit>,
+  fromMillis: Long,
+  toMillis: Long,
+  searchQuery: String,
+  nowMillis: Long,
+): List<Visit> {
+  val q = searchQuery.trim().lowercase()
+  val endInclusive =
+    if (toMillis <= 0L) Long.MAX_VALUE else DeskFormatters.endOfDayMillis(toMillis)
+  return visits.filter { visit ->
+    val arrivedMs = visit.arrivedAt?.toDate()?.time ?: nowMillis
+    val inRange = arrivedMs in fromMillis..endInclusive
+    val matchesQuery =
+      q.isEmpty() ||
+        visit.visitorName.lowercase().contains(q) ||
+        visit.visitorCompany.lowercase().contains(q) ||
+        visit.visitorMobile.lowercase().contains(q) ||
+        visit.visitorJobProfile.lowercase().contains(q) ||
+        visit.reason.lowercase().contains(q) ||
+        visit.remark.lowercase().contains(q) ||
+        visit.hostShownAs.lowercase().contains(q)
+    inRange && matchesQuery
+  }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,40 +114,40 @@ fun VisitorLogScreen(
   visits: List<Visit>,
   staff: List<StaffMember>,
   nowMillis: Long,
+  isBusy: Boolean = false,
+  onSyncArchPointData: (() -> Unit)? = null,
   onToastMessage: (String) -> Unit,
 ) {
   val context = LocalContext.current
-  var viewMode by remember { mutableStateOf(LogViewMode.ANALYTICS) }
-  var fromMillis by remember { mutableLongStateOf(DeskFormatters.daysAgoStartMillis(29)) }
-  var toMillis by remember { mutableLongStateOf(DeskFormatters.endOfDayMillis(System.currentTimeMillis())) }
+  var viewMode by remember { mutableStateOf(LogViewMode.RECORDS) }
+  var selectedPreset by remember { mutableStateOf<LogDatePreset?>(LogDatePreset.ALL) }
+  var fromMillis by remember { mutableLongStateOf(0L) }
+  var toMillis by remember { mutableLongStateOf(0L) }
   var searchQuery by remember { mutableStateOf("") }
   var pickingFrom by remember { mutableStateOf(false) }
   var pickingTo by remember { mutableStateOf(false) }
 
   val filteredVisits =
-    remember(visits, fromMillis, toMillis, searchQuery) {
-      val q = searchQuery.trim().lowercase()
-      val endInclusive = DeskFormatters.endOfDayMillis(toMillis)
-      visits.filter { visit ->
-        val arrivedMs = visit.arrivedAt?.toDate()?.time ?: nowMillis
-        val inRange = arrivedMs in fromMillis..endInclusive
-        val matchesQuery =
-          q.isEmpty() ||
-            visit.visitorName.lowercase().contains(q) ||
-            visit.visitorCompany.lowercase().contains(q) ||
-            visit.visitorMobile.lowercase().contains(q) ||
-            visit.visitorJobProfile.lowercase().contains(q) ||
-            visit.reason.lowercase().contains(q) ||
-            visit.remark.lowercase().contains(q) ||
-            visit.hostShownAs.lowercase().contains(q)
-        inRange && matchesQuery
-      }
+    remember(visits, fromMillis, toMillis, searchQuery, nowMillis) {
+      filterVisitorLogVisits(
+        visits = visits,
+        fromMillis = fromMillis,
+        toMillis = toMillis,
+        searchQuery = searchQuery,
+        nowMillis = nowMillis,
+      )
     }
 
   val totalVisits = filteredVisits.size
   val uniqueVisitors =
     remember(filteredVisits) {
-      filteredVisits.map { it.visitorMobile.takeIf { m -> m.isNotBlank() && m != "919999999999" } ?: it.visitorName }.distinct().size
+      filteredVisits
+        .map {
+          it.visitorMobile.takeIf { m -> m.isNotBlank() && m != "919999999999" }
+            ?: it.visitorName
+        }
+        .distinct()
+        .size
     }
   val meetingsHeld =
     remember(filteredVisits) {
@@ -150,13 +187,19 @@ fun VisitorLogScreen(
     }
 
   if (pickingFrom) {
-    val pickerState = rememberDatePickerState(initialSelectedDateMillis = fromMillis)
+    val pickerState =
+      rememberDatePickerState(
+        initialSelectedDateMillis = if (fromMillis > 0L) fromMillis else nowMillis,
+      )
     DatePickerDialog(
       onDismissRequest = { pickingFrom = false },
       confirmButton = {
         TextButton(
           onClick = {
-            pickerState.selectedDateMillis?.let { fromMillis = DeskFormatters.startOfTodayMillis(it) }
+            pickerState.selectedDateMillis?.let {
+              fromMillis = DeskFormatters.startOfTodayMillis(it)
+              selectedPreset = null
+            }
             pickingFrom = false
           }
         ) {
@@ -170,13 +213,19 @@ fun VisitorLogScreen(
   }
 
   if (pickingTo) {
-    val pickerState = rememberDatePickerState(initialSelectedDateMillis = toMillis)
+    val pickerState =
+      rememberDatePickerState(
+        initialSelectedDateMillis = if (toMillis > 0L) toMillis else nowMillis,
+      )
     DatePickerDialog(
       onDismissRequest = { pickingTo = false },
       confirmButton = {
         TextButton(
           onClick = {
-            pickerState.selectedDateMillis?.let { toMillis = DeskFormatters.endOfDayMillis(it) }
+            pickerState.selectedDateMillis?.let {
+              toMillis = DeskFormatters.endOfDayMillis(it)
+              selectedPreset = null
+            }
             pickingTo = false
           }
         ) {
@@ -199,13 +248,48 @@ fun VisitorLogScreen(
     GlassSegmentedControl(
       options =
         listOf(
-          LogViewMode.ANALYTICS to "Analytics",
           LogViewMode.RECORDS to "Records (${filteredVisits.size})",
+          LogViewMode.ANALYTICS to "Analytics",
         ),
       selected = viewMode,
       onSelect = { viewMode = it },
       tagPrefix = "log_view",
     )
+
+    if (visits.isEmpty() && onSyncArchPointData != null) {
+      GlassCard(contentPadding = PaddingValues(16.dp)) {
+        Text(
+          text = "No visitor records synced yet",
+          style = MaterialTheme.typography.titleMedium,
+          color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+          text = "Tap below to load all 55 ArchPoint visitor records (your scheduled appointments stay safe).",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(
+          onClick = onSyncArchPointData,
+          enabled = !isBusy,
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier.fillMaxWidth().height(48.dp).testTag("log_import_archpoint_button"),
+        ) {
+          if (isBusy) {
+            CircularProgressIndicator(
+              modifier = Modifier.size(18.dp),
+              strokeWidth = 2.dp,
+              color = MaterialTheme.colorScheme.onPrimary,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("Loading Records...")
+          } else {
+            Icon(Icons.Rounded.CloudSync, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Load 55 ArchPoint Visitor Records")
+          }
+        }
+      }
+    }
 
     // 4 KPI summary cards (2x2 on phones)
     Row(
@@ -229,39 +313,36 @@ fun VisitorLogScreen(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        OutlinedButton(
+        DatePresetButton(
+          label = "Last 7d",
+          selected = selectedPreset == LogDatePreset.LAST_7D,
           onClick = {
-            fromMillis = DeskFormatters.daysAgoStartMillis(6)
-            toMillis = DeskFormatters.endOfDayMillis(System.currentTimeMillis())
+            selectedPreset = LogDatePreset.LAST_7D
+            fromMillis = DeskFormatters.daysAgoStartMillis(6, nowMillis)
+            toMillis = DeskFormatters.endOfDayMillis(nowMillis)
           },
-          shape = RoundedCornerShape(10.dp),
-          contentPadding = PaddingValues(horizontal = 10.dp),
-          modifier = Modifier.weight(1f).height(38.dp),
-        ) {
-          Text("Last 7d", style = MaterialTheme.typography.labelSmall)
-        }
-        OutlinedButton(
+          modifier = Modifier.weight(1f).testTag("log_preset_7d"),
+        )
+        DatePresetButton(
+          label = "Last 30d",
+          selected = selectedPreset == LogDatePreset.LAST_30D,
           onClick = {
-            fromMillis = DeskFormatters.daysAgoStartMillis(29)
-            toMillis = DeskFormatters.endOfDayMillis(System.currentTimeMillis())
+            selectedPreset = LogDatePreset.LAST_30D
+            fromMillis = DeskFormatters.daysAgoStartMillis(29, nowMillis)
+            toMillis = DeskFormatters.endOfDayMillis(nowMillis)
           },
-          shape = RoundedCornerShape(10.dp),
-          contentPadding = PaddingValues(horizontal = 10.dp),
-          modifier = Modifier.weight(1f).height(38.dp),
-        ) {
-          Text("Last 30d", style = MaterialTheme.typography.labelSmall)
-        }
-        OutlinedButton(
+          modifier = Modifier.weight(1f).testTag("log_preset_30d"),
+        )
+        DatePresetButton(
+          label = "All",
+          selected = selectedPreset == LogDatePreset.ALL,
           onClick = {
+            selectedPreset = LogDatePreset.ALL
             fromMillis = 0L
-            toMillis = DeskFormatters.endOfDayMillis(System.currentTimeMillis())
+            toMillis = 0L
           },
-          shape = RoundedCornerShape(10.dp),
-          contentPadding = PaddingValues(horizontal = 10.dp),
-          modifier = Modifier.weight(1f).height(38.dp),
-        ) {
-          Text("All", style = MaterialTheme.typography.labelSmall)
-        }
+          modifier = Modifier.weight(1f).testTag("log_preset_all"),
+        )
       }
 
       Row(
@@ -289,7 +370,7 @@ fun VisitorLogScreen(
           Icon(Icons.Rounded.CalendarToday, contentDescription = null, modifier = Modifier.size(16.dp))
           Spacer(Modifier.width(6.dp))
           Text(
-            "To ${DeskFormatters.formatDisplayDateField(toMillis)}",
+            if (toMillis <= 0L) "To Latest" else "To ${DeskFormatters.formatDisplayDateField(toMillis)}",
             style = MaterialTheme.typography.bodySmall,
             maxLines = 1,
           )
@@ -302,6 +383,13 @@ fun VisitorLogScreen(
           onValueChange = { searchQuery = it },
           placeholder = { Text("Search name, company, mobile, profile, remark...") },
           leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+          trailingIcon = {
+            if (searchQuery.isNotEmpty()) {
+              IconButton(onClick = { searchQuery = "" }) {
+                Icon(Icons.Rounded.Clear, contentDescription = "Clear search")
+              }
+            }
+          },
           singleLine = true,
           modifier = Modifier.fillMaxWidth().testTag("log_search_input"),
         )
@@ -315,82 +403,137 @@ fun VisitorLogScreen(
       )
     } else {
       GlassCard(contentPadding = PaddingValues(16.dp)) {
-
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Button(
-          onClick = {
-            val fileName = "archpoint_visitors_${DeskFormatters.formatCsvDate(Date())}.csv"
-            csvSaverLauncher.launch(fileName)
-          },
-          colors =
-            ButtonDefaults.buttonColors(
-              containerColor = MaterialTheme.colorScheme.primary,
-              contentColor = MaterialTheme.colorScheme.onPrimary,
-            ),
-          shape = RoundedCornerShape(12.dp),
-          modifier = Modifier.weight(1f).height(48.dp).testTag("download_csv_button"),
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalAlignment = Alignment.CenterVertically,
         ) {
-          Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-          Spacer(Modifier.width(8.dp))
-          Text("Download CSV")
+          Button(
+            onClick = {
+              val fileName = "archpoint_visitors_${DeskFormatters.formatCsvDate(Date())}.csv"
+              csvSaverLauncher.launch(fileName)
+            },
+            colors =
+              ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+              ),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.weight(1f).height(48.dp).testTag("download_csv_button"),
+          ) {
+            Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Download CSV")
+          }
+
+          OutlinedButton(
+            onClick = {
+              try {
+                val exportsDir = File(context.cacheDir, "exports").apply { mkdirs() }
+                val file =
+                  File(exportsDir, "archpoint_visitors_${DeskFormatters.formatCsvDate(Date())}.csv")
+                file.writeText(DeskFormatters.buildSafeVisitorCsv(filteredVisits), Charsets.UTF_8)
+                val uri =
+                  FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                val shareIntent =
+                  Intent(Intent.ACTION_SEND).apply {
+                    type = "text/csv"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                  }
+                context.startActivity(Intent.createChooser(shareIntent, "Share Visitor Log CSV"))
+              } catch (e: Exception) {
+                onToastMessage("Could not share CSV: ${e.localizedMessage}")
+              }
+            },
+            shape = RoundedCornerShape(12.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp),
+            modifier = Modifier.height(48.dp).testTag("share_csv_button"),
+          ) {
+            Icon(Icons.Rounded.Share, contentDescription = "Share CSV", modifier = Modifier.size(18.dp))
+          }
         }
 
-        OutlinedButton(
-          onClick = {
-            try {
-              val exportsDir = File(context.cacheDir, "exports").apply { mkdirs() }
-              val file =
-                File(exportsDir, "archpoint_visitors_${DeskFormatters.formatCsvDate(Date())}.csv")
-              file.writeText(DeskFormatters.buildSafeVisitorCsv(filteredVisits), Charsets.UTF_8)
-              val uri =
-                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-              val shareIntent =
-                Intent(Intent.ACTION_SEND).apply {
-                  type = "text/csv"
-                  putExtra(Intent.EXTRA_STREAM, uri)
-                  addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-              context.startActivity(Intent.createChooser(shareIntent, "Share Visitor Log CSV"))
-            } catch (e: Exception) {
-              onToastMessage("Could not share CSV: ${e.localizedMessage}")
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+
+        if (filteredVisits.isEmpty()) {
+          Column(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            Text(
+              text =
+                if (visits.isEmpty()) {
+                  "No visitor records found in this workspace yet."
+                } else {
+                  "No visitor records match this date range or search."
+                },
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (visits.isNotEmpty()) {
+              OutlinedButton(
+                onClick = {
+                  selectedPreset = LogDatePreset.ALL
+                  fromMillis = 0L
+                  toMillis = 0L
+                  searchQuery = ""
+                },
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.heightIn(min = 48.dp).testTag("log_reset_filters_button"),
+              ) {
+                Text("Show All ${visits.size} Visits")
+              }
             }
-          },
-          shape = RoundedCornerShape(12.dp),
-          contentPadding = PaddingValues(horizontal = 14.dp),
-          modifier = Modifier.height(48.dp).testTag("share_csv_button"),
-        ) {
-          Icon(Icons.Rounded.Share, contentDescription = "Share CSV", modifier = Modifier.size(18.dp))
-        }
-      }
-
-      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
-
-      if (filteredVisits.isEmpty()) {
-        Text(
-          "No visitor records match this date range or search.",
-          style = MaterialTheme.typography.bodyMedium,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          modifier = Modifier.padding(vertical = 12.dp),
-        )
-      } else {
-        val hScroll = rememberScrollState()
-        Column(modifier = Modifier.horizontalScroll(hScroll)) {
-          LogHeaderRow()
-          HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
-          filteredVisits.forEach { visit ->
-            LogDataRow(visit = visit)
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+          }
+        } else {
+          Text(
+            text = "${filteredVisits.size} records · Swipe table sideways for mobile, company, remark & times",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+          val hScroll = rememberScrollState()
+          Column(modifier = Modifier.horizontalScroll(hScroll)) {
+            LogHeaderRow()
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            filteredVisits.forEach { visit ->
+              LogDataRow(visit = visit)
+              HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+            }
           }
         }
       }
     }
-    }
 
     Spacer(Modifier.height(16.dp))
+  }
+}
+
+@Composable
+private fun DatePresetButton(
+  label: String,
+  selected: Boolean,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  if (selected) {
+    Button(
+      onClick = onClick,
+      shape = RoundedCornerShape(10.dp),
+      contentPadding = PaddingValues(horizontal = 10.dp),
+      modifier = modifier.heightIn(min = 48.dp),
+    ) {
+      Text(label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+    }
+  } else {
+    OutlinedButton(
+      onClick = onClick,
+      shape = RoundedCornerShape(10.dp),
+      contentPadding = PaddingValues(horizontal = 10.dp),
+      modifier = modifier.heightIn(min = 48.dp),
+    ) {
+      Text(label, style = MaterialTheme.typography.labelSmall)
+    }
   }
 }
 

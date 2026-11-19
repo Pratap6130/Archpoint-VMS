@@ -124,7 +124,7 @@ fun RecentVisitorsStripCard(
       modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-      visitors.forEach { profile ->
+      visitors.take(15).forEach { profile ->
         val selected = isVisitorSelectedInForm(profile, form)
         val usablePhone =
           profile.mobile.filter { it.isDigit() }.takeIf { it.isNotBlank() && it != "919999999999" }.orEmpty()

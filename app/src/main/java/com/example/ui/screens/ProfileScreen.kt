@@ -27,6 +27,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BatteryChargingFull
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Chair
 import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.DarkMode
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -88,7 +90,10 @@ import com.example.ui.components.matchesLocationText
 import com.example.ui.components.matchesSeating
 import com.example.ui.theme.archPointStatusColors
 import com.example.ui.viewmodel.DeskSnapshot
+import com.example.ui.viewmodel.GoogleCalendarUiState
+import com.example.util.DeskFormatters
 import com.example.util.StaffPhotoCodec
+import java.util.Date
 import kotlinx.coroutines.launch
 
 @Composable
@@ -99,6 +104,9 @@ fun ProfileScreen(
   notificationsEnabled: Boolean,
   backgroundServiceRunning: Boolean,
   isBusy: Boolean,
+  calendarState: GoogleCalendarUiState = GoogleCalendarUiState(),
+  onConnectOrSyncCalendar: () -> Unit = {},
+  onDisconnectCalendar: () -> Unit = {},
   onSelectTheme: (AppThemeMode) -> Unit,
   onSaveOwnProfile: (
     fullName: String,
@@ -146,6 +154,12 @@ fun ProfileScreen(
             onOpenSettings = onOpenSettings,
             onSaveOwnProfile = onSaveOwnProfile,
           )
+          GoogleCalendarIntegrationCard(
+            userEmail = userEmail,
+            calendarState = calendarState,
+            onConnectOrSync = onConnectOrSyncCalendar,
+            onDisconnect = onDisconnectCalendar,
+          )
           AppearanceAndAlertsCard(
             themeMode = themeMode,
             notificationsEnabled = notificationsEnabled,
@@ -182,6 +196,12 @@ fun ProfileScreen(
           onOpenSettings = onOpenSettings,
           onSaveOwnProfile = onSaveOwnProfile,
         )
+        GoogleCalendarIntegrationCard(
+          userEmail = userEmail,
+          calendarState = calendarState,
+          onConnectOrSync = onConnectOrSyncCalendar,
+          onDisconnect = onDisconnectCalendar,
+        )
         AppearanceAndAlertsCard(
           themeMode = themeMode,
           notificationsEnabled = notificationsEnabled,
@@ -199,6 +219,115 @@ fun ProfileScreen(
           MembersDirectoryCard(snapshot = snapshot)
         }
         Spacer(Modifier.height(16.dp))
+      }
+    }
+  }
+}
+
+@Composable
+private fun GoogleCalendarIntegrationCard(
+  userEmail: String,
+  calendarState: GoogleCalendarUiState,
+  onConnectOrSync: () -> Unit,
+  onDisconnect: () -> Unit,
+) {
+  val status = archPointStatusColors()
+  GlassCard(modifier = Modifier.testTag("profile_calendar_card")) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+        Icon(
+          imageVector = Icons.Rounded.CalendarMonth,
+          contentDescription = "Google Calendar",
+          tint = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text("Google Calendar Sync", style = MaterialTheme.typography.titleMedium)
+      }
+      StatusPill(
+        text =
+          when {
+            calendarState.isSyncing -> "Syncing..."
+            calendarState.isConnecting -> "Connecting..."
+            calendarState.isConnected -> "Connected"
+            else -> "Not connected"
+          },
+        containerColor =
+          if (calendarState.isConnected) status.freeContainer
+          else MaterialTheme.colorScheme.surfaceVariant,
+        contentColor =
+          if (calendarState.isConnected) status.freeOnContainer
+          else MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+
+    Text(
+      text =
+        if (calendarState.isConnected) {
+          val syncedAt =
+            if (calendarState.lastSyncedMillis > 0L) {
+              " · Last synced ${DeskFormatters.formatTime(Date(calendarState.lastSyncedMillis))}"
+            } else {
+              ""
+            }
+          "Synced with ${calendarState.connectedEmail.ifBlank { userEmail }} · ${calendarState.events.size} upcoming events$syncedAt"
+        } else {
+          "Connect ${userEmail.ifBlank { "your Google account" }} to show your Google Calendar meetings and auto-add booked appointments."
+        },
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    if (!calendarState.errorMessage.isNullOrBlank()) {
+      Text(
+        text = calendarState.errorMessage,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.error,
+      )
+    }
+
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Button(
+        onClick = onConnectOrSync,
+        enabled = !calendarState.isConnecting && !calendarState.isSyncing,
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.weight(1f).height(48.dp).testTag("profile_calendar_connect_button"),
+      ) {
+        if (calendarState.isConnecting || calendarState.isSyncing) {
+          CircularProgressIndicator(
+            modifier = Modifier.size(16.dp),
+            strokeWidth = 2.dp,
+            color = MaterialTheme.colorScheme.onPrimary,
+          )
+          Spacer(Modifier.width(8.dp))
+          Text(if (calendarState.isConnecting) "Connecting..." else "Syncing...")
+        } else {
+          Icon(
+            imageVector = if (calendarState.isConnected) Icons.Rounded.Sync else Icons.Rounded.CalendarMonth,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(Modifier.width(8.dp))
+          Text(if (calendarState.isConnected) "Sync Calendar Now" else "Connect Google Calendar")
+        }
+      }
+
+      if (calendarState.isConnected) {
+        OutlinedButton(
+          onClick = onDisconnect,
+          enabled = !calendarState.isSyncing,
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier.height(48.dp).testTag("profile_calendar_disconnect_button"),
+        ) {
+          Text("Disconnect")
+        }
       }
     }
   }

@@ -47,6 +47,8 @@ data class ImportSummary(
   val reasonsAdded: Int,
   val visitsAdded: Int,
   val profilesAdded: Int,
+  val visitsRemoved: Int = 0,
+  val profilesRemoved: Int = 0,
 ) {
   val totalAdded: Int
     get() = staffAdded + reasonsAdded + visitsAdded + profilesAdded
@@ -540,6 +542,95 @@ class VisitorDeskRepository(
     }
   }
 
+  suspend fun replaceArchPointVisitorData(
+    office: Office,
+    currentStaff: List<StaffMember>,
+    currentReasons: List<VisitReason>,
+    currentProfiles: List<VisitorProfile>,
+    currentVisits: List<Visit>,
+  ): Result<ImportSummary> {
+    val path = "offices/${office.id}"
+    return try {
+      val uid = requireUserId()
+      val email = requireVerifiedEmail()
+      val officeRef = db.collection("offices").document(office.id)
+
+      val remoteVisitsSnap =
+        officeRef
+          .collection("visits")
+          .whereArrayContains("allowedReaderEmails", email)
+          .get()
+          .await()
+      val remoteProfilesSnap =
+        officeRef
+          .collection("visitorProfiles")
+          .whereArrayContains("allowedReaderEmails", email)
+          .get()
+          .await()
+
+      val targetVisitIds = ArchPointSeedData.pastVisits.map { it.docId }.toSet()
+      val targetProfileIds =
+        ArchPointSeedData.pastVisits
+          .map { past ->
+            if (past.phone.isNotBlank() && past.phone != "919999999999") {
+              past.phone
+            } else {
+              "prof_past_${past.rowNumber.toString().padStart(2, '0')}"
+            }
+          }
+          .toSet()
+
+      val visitIdsToDelete =
+        (currentVisits.map { it.id } + remoteVisitsSnap.documents.map { it.id })
+          .filter { it.isNotBlank() && it !in targetVisitIds }
+          .distinct()
+      val profileIdsToDelete =
+        (currentProfiles.map { it.id } + remoteProfilesSnap.documents.map { it.id })
+          .filter { it.isNotBlank() && it !in targetProfileIds }
+          .distinct()
+
+      // Write/overwrite target records first so a failed batch never leaves the database wiped empty.
+      val writeQueue = BatchQueue(db)
+      val summary =
+        enqueueDefaultArchPointCatalog(
+          office = office,
+          currentStaff = currentStaff,
+          currentReasons = currentReasons,
+          currentProfiles = emptyList(),
+          currentVisits = emptyList(),
+          actorUid = uid,
+          actorEmail = email,
+          queue = writeQueue,
+        )
+      writeQueue.commitAll()
+
+      val deleteQueue = BatchQueue(db)
+      visitIdsToDelete.forEach { visitId ->
+        deleteQueue.enqueue { batch ->
+          batch.delete(officeRef.collection("visits").document(visitId))
+        }
+      }
+      profileIdsToDelete.forEach { profileId ->
+        deleteQueue.enqueue { batch ->
+          batch.delete(officeRef.collection("visitorProfiles").document(profileId))
+        }
+      }
+      deleteQueue.commitAll()
+
+      Result.success(
+        summary.copy(
+          visitsRemoved = visitIdsToDelete.size,
+          profilesRemoved = profileIdsToDelete.size,
+        )
+      )
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.WRITE, path)
+      Result.failure(e)
+    }
+  }
+
   suspend fun importDefaultArchPointData(
     office: Office,
     currentStaff: List<StaffMember>,
@@ -711,11 +802,23 @@ class VisitorDeskRepository(
 
       if (past.docId !in existingVisitIds) {
         visitsAdded++
-        val targetSpecId = ArchPointSeedData.hostSpecIdForName(past.personToMeet)
-        val hostMember = resolvedStaffById[targetSpecId]
-        val hostShownAs = hostMember?.shownAs?.ifBlank { hostMember.fullName } ?: past.personToMeet
+        val isOtherPerson = past.personToMeet.trim().equals("Other", ignoreCase = true)
+        val targetSpecId =
+          if (isOtherPerson) "other" else ArchPointSeedData.hostSpecIdForName(past.personToMeet)
+        val hostMember = if (isOtherPerson) null else resolvedStaffById[targetSpecId]
+        val hostShownAs =
+          when {
+            isOtherPerson -> "Other (2nd Floor)"
+            hostMember != null -> hostMember.shownAs.ifBlank { hostMember.fullName }
+            else -> past.personToMeet
+          }
         val hostEmail = hostMember?.email?.trim()?.lowercase().orEmpty()
-        val hostCabin = hostMember?.formattedSeating()?.ifBlank { hostMember.cabin }.orEmpty()
+        val hostCabin =
+          when {
+            isOtherPerson -> "2nd Floor"
+            hostMember != null -> hostMember.formattedSeating().ifBlank { hostMember.cabin }
+            else -> ""
+          }
         val visitReaders =
           (if (hostEmail.isNotBlank() && hostEmail in activeEmails) receptionAdminEmails + hostEmail else receptionAdminEmails)
             .distinct()
@@ -762,8 +865,11 @@ class VisitorDeskRepository(
       if (profileDocId !in existingProfileIds) {
         profilesAdded++
         val (latestSpec, totalCount) = pair
-        val targetSpecId = ArchPointSeedData.hostSpecIdForName(latestSpec.personToMeet)
-        val hostId = resolvedStaffById[targetSpecId]?.id ?: targetSpecId
+        val isOtherPerson = latestSpec.personToMeet.trim().equals("Other", ignoreCase = true)
+        val targetSpecId =
+          if (isOtherPerson) "other" else ArchPointSeedData.hostSpecIdForName(latestSpec.personToMeet)
+        val hostId =
+          if (isOtherPerson) "other" else (resolvedStaffById[targetSpecId]?.id ?: targetSpecId)
         val ts = latestSpec.parseSubmittedTimestamp()
         queue.enqueue { batch ->
           batch.set(
@@ -782,7 +888,7 @@ class VisitorDeskRepository(
               "lastReason" to latestSpec.resolvedReason().take(60),
               "officeOwnerUid" to office.ownerUid,
               "allowedReaderEmails" to receptionAdminEmails,
-              "createdAt" to ts,
+              "createdAt" to FieldValue.serverTimestamp(),
               "updatedAt" to FieldValue.serverTimestamp(),
             ),
           )
@@ -2162,7 +2268,7 @@ class VisitorDeskRepository(
     existing: Appointment?,
     appointment: Appointment,
     isHostSelfEdit: Boolean,
-  ): Result<Unit> {
+  ): Result<Appointment> {
     val apptId =
       existing?.id?.takeIf { it.isNotBlank() }
         ?: "appt_${UUID.randomUUID().toString().replace("-", "").take(12)}"
@@ -2184,10 +2290,20 @@ class VisitorDeskRepository(
         appointment.scheduledAtMillis.takeIf { it > 0L }
           ?: DeskFormatters.parseScheduledMillis(cleanDateIso, cleanTimeLabel)
 
+      val cleanCalendarEventId =
+        appointment.calendarEventId.ifBlank { existing?.calendarEventId.orEmpty() }.trim().take(128)
+      val cleanCalendarHtmlLink =
+        appointment.calendarHtmlLink.ifBlank { existing?.calendarHtmlLink.orEmpty() }.trim().take(400)
+      val cleanCalendarSyncedEmail =
+        appointment.calendarSyncedEmail.ifBlank { existing?.calendarSyncedEmail.orEmpty() }.trim().lowercase().take(120)
+
       val docRef = db.collection("offices").document(office.id).collection("appointments").document(apptId)
+      val resolvedHostEmail: String
+      val resolvedStatus: String
       if (existing == null) {
-        val cleanHostEmail =
+        resolvedHostEmail =
           if (isHostSelfEdit) email else appointment.hostEmail.trim().lowercase().take(120)
+        resolvedStatus = AppointmentStatus.SCHEDULED.wireValue
         val payload = mapOf(
           "visitorName" to cleanVisitorName,
           "visitorMobile" to appointment.visitorMobile.trim().take(20),
@@ -2201,19 +2317,23 @@ class VisitorDeskRepository(
           "notes" to appointment.notes.trim().take(300),
           "hostStaffId" to appointment.hostStaffId.trim().take(64),
           "hostShownAs" to appointment.hostShownAs.trim().take(60),
-          "hostEmail" to cleanHostEmail,
+          "hostEmail" to resolvedHostEmail,
           "hostCabin" to appointment.hostCabin.trim().take(100),
-          "status" to AppointmentStatus.SCHEDULED.wireValue,
+          "status" to resolvedStatus,
           "bookedByRole" to appointment.bookedByRole.trim().take(30),
+          "calendarEventId" to cleanCalendarEventId,
+          "calendarHtmlLink" to cleanCalendarHtmlLink,
+          "calendarSyncedEmail" to cleanCalendarSyncedEmail,
           "createdByUid" to uid,
           "createdByEmail" to email,
           "officeOwnerUid" to office.ownerUid,
-          "allowedReaderEmails" to buildPrReaders(office, cleanHostEmail),
+          "allowedReaderEmails" to buildPrReaders(office, resolvedHostEmail),
           "createdAt" to FieldValue.serverTimestamp(),
           "updatedAt" to FieldValue.serverTimestamp(),
         )
         docRef.set(payload).await()
       } else {
+        resolvedStatus = appointment.parsedStatus().wireValue
         val updateMap = mutableMapOf<String, Any>(
           "visitorName" to cleanVisitorName,
           "visitorMobile" to appointment.visitorMobile.trim().take(20),
@@ -2225,24 +2345,88 @@ class VisitorDeskRepository(
           "scheduledTimeLabel" to cleanTimeLabel,
           "scheduledAtMillis" to scheduledMs.coerceAtLeast(0L),
           "notes" to appointment.notes.trim().take(300),
-          "status" to appointment.parsedStatus().wireValue,
+          "status" to resolvedStatus,
           "updatedAt" to FieldValue.serverTimestamp(),
         )
         if (!isHostSelfEdit) {
-          val cleanHostEmail = appointment.hostEmail.trim().lowercase().take(120)
+          resolvedHostEmail = appointment.hostEmail.trim().lowercase().take(120)
           updateMap["hostStaffId"] = appointment.hostStaffId.trim().take(64)
           updateMap["hostShownAs"] = appointment.hostShownAs.trim().take(60)
-          updateMap["hostEmail"] = cleanHostEmail
+          updateMap["hostEmail"] = resolvedHostEmail
           updateMap["hostCabin"] = appointment.hostCabin.trim().take(100)
-          updateMap["allowedReaderEmails"] = buildPrReaders(office, cleanHostEmail)
+          updateMap["allowedReaderEmails"] = buildPrReaders(office, resolvedHostEmail)
+        } else {
+          resolvedHostEmail = existing.hostEmail.trim().lowercase().take(120)
         }
         docRef.update(updateMap).await()
       }
-      Result.success(Unit)
+
+      val persisted =
+        appointment.copy(
+          id = apptId,
+          visitorName = cleanVisitorName,
+          visitorMobile = appointment.visitorMobile.trim().take(20),
+          visitorCompany = appointment.visitorCompany.trim().take(100),
+          visitorEmail = appointment.visitorEmail.trim().lowercase().take(120),
+          purpose = cleanPurpose,
+          location = appointment.location.trim().take(120),
+          scheduledDateIso = cleanDateIso,
+          scheduledTimeLabel = cleanTimeLabel,
+          scheduledAtMillis = scheduledMs.coerceAtLeast(0L),
+          notes = appointment.notes.trim().take(300),
+          hostStaffId =
+            if (isHostSelfEdit && existing != null) existing.hostStaffId
+            else appointment.hostStaffId.trim().take(64),
+          hostShownAs =
+            if (isHostSelfEdit && existing != null) existing.hostShownAs
+            else appointment.hostShownAs.trim().take(60),
+          hostEmail = resolvedHostEmail,
+          hostCabin =
+            if (isHostSelfEdit && existing != null) existing.hostCabin
+            else appointment.hostCabin.trim().take(100),
+          status = resolvedStatus,
+          calendarEventId = cleanCalendarEventId,
+          calendarHtmlLink = cleanCalendarHtmlLink,
+          calendarSyncedEmail = cleanCalendarSyncedEmail,
+        )
+      Result.success(persisted)
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
       handleFirestoreError(e, if (existing == null) OperationType.CREATE else OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun updateAppointmentCalendarMetadata(
+    officeId: String,
+    appointmentId: String,
+    calendarEventId: String,
+    calendarHtmlLink: String,
+    calendarSyncedEmail: String,
+  ): Result<Unit> {
+    val path = "offices/$officeId/appointments/$appointmentId"
+    return try {
+      requireUserId()
+      require(appointmentId.isNotBlank()) { "Appointment ID is required." }
+      db.collection("offices")
+        .document(officeId)
+        .collection("appointments")
+        .document(appointmentId)
+        .update(
+          mapOf(
+            "calendarEventId" to calendarEventId.trim().take(128),
+            "calendarHtmlLink" to calendarHtmlLink.trim().take(400),
+            "calendarSyncedEmail" to calendarSyncedEmail.trim().lowercase().take(120),
+            "updatedAt" to FieldValue.serverTimestamp(),
+          ),
+        )
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
       Result.failure(e)
     }
   }

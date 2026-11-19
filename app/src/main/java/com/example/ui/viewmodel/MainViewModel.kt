@@ -1,6 +1,8 @@
 package com.example.ui.viewmodel
 
 import android.content.Context
+import android.content.Intent
+import android.content.IntentSender
 import android.net.Uri
 import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
@@ -12,6 +14,11 @@ import com.example.alerts.VisitAlertEvent
 import com.example.alerts.VisitorAlertManager
 import com.example.data.ai.ScannedVisitorCard
 import com.example.data.ai.VisitorCardScanner
+import com.example.data.calendar.CalendarApiResult
+import com.example.data.calendar.CalendarAuthState
+import com.example.data.calendar.GoogleCalendarAuthHelper
+import com.example.data.calendar.GoogleCalendarEventItem
+import com.example.data.calendar.GoogleCalendarService
 import com.example.data.model.AppTab
 import com.example.data.model.Appointment
 import com.example.data.model.AppointmentStatus
@@ -37,9 +44,17 @@ import com.example.data.model.VisitStatus
 import com.example.data.model.VisitorProfile
 import com.example.data.preferences.ThemePreferences
 import com.example.data.repository.VisitorDeskRepository
+import com.example.data.selfcheckin.SelfCheckInPayload
+import com.example.data.selfcheckin.SelfCheckInServerConfig
+import com.example.data.selfcheckin.SelfCheckInWebServer
+import com.example.data.selfcheckin.VisitorQrCodec
 import com.example.util.DeskFormatters
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.common.InputImage
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -58,6 +73,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 
 data class HostBoardItem(
   val staff: StaffMember,
@@ -127,12 +144,62 @@ data class DeskSnapshot(
   val appointments: List<Appointment> = emptyList(),
 )
 
+data class GoogleCalendarUiState(
+  val isConnected: Boolean = false,
+  val isConnecting: Boolean = false,
+  val isSyncing: Boolean = false,
+  val connectedEmail: String = "",
+  val events: List<GoogleCalendarEventItem> = emptyList(),
+  val lastSyncedMillis: Long = 0L,
+  val errorMessage: String? = null,
+  val pendingConsentIntentSender: IntentSender? = null,
+)
+
 sealed interface CardScanState {
   data object Idle : CardScanState
   data class Scanning(val preview: ImageBitmap?) : CardScanState
   data class Success(val card: ScannedVisitorCard, val preview: ImageBitmap?) : CardScanState
   data class Error(val message: String, val preview: ImageBitmap?) : CardScanState
 }
+
+data class SelfCheckInSubmissionRecord(
+  val id: String,
+  val payload: SelfCheckInPayload,
+  val receivedAtMillis: Long,
+  val autoCheckedIn: Boolean,
+  val assignedHostName: String,
+  val statusLabel: String,
+)
+
+data class SelfCheckInHubState(
+  val isServerRunning: Boolean = false,
+  val serverUrl: String = "",
+  val localTestUrl: String = "",
+  val isLanAvailable: Boolean = false,
+  val autoCheckInOnSubmit: Boolean = true,
+  val recentSubmissions: List<SelfCheckInSubmissionRecord> = emptyList(),
+  val serverError: String? = null,
+)
+
+data class VisitorKioskState(
+  val isActive: Boolean = false,
+  val isSubmitting: Boolean = false,
+  val isScanningCard: Boolean = false,
+  val mobile: String = "",
+  val name: String = "",
+  val company: String = "",
+  val email: String = "",
+  val dob: String = "",
+  val remark: String = "",
+  val selectedReason: String = "",
+  val selectedHostId: String = "",
+  val matchedProfile: VisitorProfile? = null,
+  val suppressedAutoMatchMobile: String = "",
+  val completedVisitorName: String = "",
+  val completedHostName: String = "",
+  val completedHostCabin: String = "",
+  val completedPassQrText: String = "",
+)
 
 sealed interface WorkspaceState {
   data object Loading : WorkspaceState
@@ -189,6 +256,25 @@ class MainViewModel(
 
   private val _visitAlerts = MutableSharedFlow<VisitAlertEvent>(extraBufferCapacity = 32)
   val visitAlerts = _visitAlerts.asSharedFlow()
+
+  private val calendarService = GoogleCalendarService()
+  private var calendarAccessToken: String? = null
+  private var silentCalendarChecked = false
+  private var pendingSyncSnapshot: DeskSnapshot? = null
+  private var pendingSingleAppointment: Appointment? = null
+
+  private val _googleCalendarState = MutableStateFlow(GoogleCalendarUiState())
+  val googleCalendarState: StateFlow<GoogleCalendarUiState> = _googleCalendarState.asStateFlow()
+
+  private val selfCheckInWebServer = SelfCheckInWebServer()
+  private val _selfCheckInHub = MutableStateFlow(SelfCheckInHubState())
+  val selfCheckInHub: StateFlow<SelfCheckInHubState> = _selfCheckInHub.asStateFlow()
+
+  private val _kioskState = MutableStateFlow(VisitorKioskState())
+  val kioskState: StateFlow<VisitorKioskState> = _kioskState.asStateFlow()
+
+  @Volatile
+  private var latestReadySnapshot: DeskSnapshot? = null
 
   private var lastObservedOfficeId: String? = null
   private var lastVisitsById: Map<String, Visit>? = null
@@ -490,31 +576,35 @@ class MainViewModel(
           appointments = scopedAppointments,
         )
 
-      // One-time auto-seed / access-field sync for existing Admin workspaces
+      latestReadySnapshot = snapshot
+      // Auto-migration (v3) & empty-log recovery (v4): loads the 55 ArchPoint visitor entries
+      // without deleting appointments, and recovers cleanly if an earlier run left 0 visits.
       if (resolvedRole == StaffRole.ADMIN && office != null && autoSeedCheckedOffices.add(officeId)) {
-        val missingSeed =
-          staff.none { it.id == "staff_archpoint_11" } ||
-            rawVisits.none { it.id.startsWith("visit_past_") } ||
-            (staff.any { it.activeAccount && it.email.isNotBlank() && it.parsedRole() == StaffRole.RECEPTION } &&
-              office.receptionEmails.isEmpty())
-        if (missingSeed) {
-          viewModelScope.launch {
-            if (!preferences.hasAttemptedDefaultSeed("v2_$officeId")) {
-              preferences.markDefaultSeedAttempted("v2_$officeId")
-              repository.importDefaultArchPointData(
+        viewModelScope.launch {
+          val v3Done = preferences.hasAttemptedDefaultSeed("v3_$officeId")
+          val v4Recovered = preferences.hasAttemptedDefaultSeed("v4_recover_$officeId")
+          val noImportedVisitsPresent = rawVisits.isEmpty() && rawVisits.none { it.id.startsWith("visit_past_") }
+          if (!v3Done || (!v4Recovered && noImportedVisitsPresent)) {
+            repository
+              .replaceArchPointVisitorData(
                 office = office,
                 currentStaff = staff,
                 currentReasons = reasons,
                 currentProfiles = profiles,
                 currentVisits = rawVisits,
-              ).onSuccess { summary ->
-                if (summary.totalAdded > 0) {
-                  _feedback.tryEmit(
-                    "Loaded ${summary.staffAdded} team members & ${summary.visitsAdded} past visitor records"
-                  )
-                }
+              )
+              .onSuccess { summary ->
+                preferences.markDefaultSeedAttempted("v3_$officeId")
+                preferences.markDefaultSeedAttempted("v4_recover_$officeId")
+                _feedback.tryEmit(
+                  "Loaded ${summary.visitsAdded} visitor records & ${summary.profilesAdded} profiles (appointments preserved)"
+                )
               }
-            }
+              .onFailure { err ->
+                _feedback.tryEmit(err.localizedMessage ?: "Failed to update visitor records")
+              }
+          } else if (v3Done && !v4Recovered) {
+            preferences.markDefaultSeedAttempted("v4_recover_$officeId")
           }
         }
       }
@@ -555,8 +645,8 @@ class MainViewModel(
       val result = repository.initializeOfficeWorkspace(officeName, fullName, shownAs, cabin)
       _isSettingUpWorkspace.value = false
       result.onSuccess { newOfficeId ->
-        preferences.markDefaultSeedAttempted("v2_$newOfficeId")
-        _feedback.tryEmit("Office workspace ready with ArchPoint team & past records")
+        preferences.markDefaultSeedAttempted("v3_$newOfficeId")
+        _feedback.tryEmit("Office workspace ready with ArchPoint team & 55 visitor records")
       }.onFailure { err ->
         _feedback.tryEmit(err.localizedMessage ?: "Failed to set up office")
       }
@@ -569,7 +659,7 @@ class MainViewModel(
     _isBusy.value = true
     viewModelScope.launch {
       val result =
-        repository.importDefaultArchPointData(
+        repository.replaceArchPointVisitorData(
           office = office,
           currentStaff = snapshot.staff,
           currentReasons = snapshot.reasons,
@@ -579,16 +669,13 @@ class MainViewModel(
       _isBusy.value = false
       result
         .onSuccess { summary ->
-          preferences.markDefaultSeedAttempted("v2_${office.id}")
-          if (summary.totalAdded == 0) {
-            _feedback.tryEmit("ArchPoint team & past records are already up to date")
-          } else {
-            _feedback.tryEmit(
-              "Imported ${summary.staffAdded} staff, ${summary.visitsAdded} visits, ${summary.profilesAdded} profiles"
-            )
-          }
+          preferences.markDefaultSeedAttempted("v3_${office.id}")
+          _visitorSearch.value = VisitorSearchState()
+          _feedback.tryEmit(
+            "Replaced ${summary.visitsRemoved} old entries with ${summary.visitsAdded} visitor records & ${summary.profilesAdded} profiles (appointments kept)"
+          )
         }
-        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to sync ArchPoint records") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to replace ArchPoint records") }
     }
   }
 
@@ -598,7 +685,7 @@ class MainViewModel(
     val digits = input.filter { it.isDigit() }.take(15)
     val current = _receptionForm.value
     if (digits.length >= 10 && digits != "919999999999" && digits != current.suppressedAutoMatchMobile) {
-      val match = profiles.firstOrNull { it.mobile == digits }
+      val match = profiles.firstOrNull { mobileMatches(it.mobile, digits) }
       if (match != null) {
         val validHostId =
           hosts.firstOrNull { it.id == match.lastHostStaffId }?.id
@@ -848,6 +935,587 @@ class MainViewModel(
           _feedback.tryEmit(err.localizedMessage ?: "Check-in failed")
         }
     }
+  }
+
+  // --- SELF CHECK-IN QR FORM, SCANNER & KIOSK MODE ---
+
+  fun toggleSelfCheckInServer(snapshot: DeskSnapshot) {
+    if (_selfCheckInHub.value.isServerRunning) {
+      stopSelfCheckInServer()
+      return
+    }
+    val office = snapshot.office ?: return
+    val result =
+      selfCheckInWebServer.start(
+        scope = viewModelScope,
+        configProvider = {
+          val live = latestReadySnapshot ?: snapshot
+          SelfCheckInServerConfig(
+            officeName = live.office?.name ?: office.name,
+            hosts = live.staff,
+            reasons = live.reasons,
+          )
+        },
+        onCheckInSubmitted = { payload ->
+          val live = latestReadySnapshot ?: snapshot
+          handleIncomingSelfCheckIn(payload = payload, snapshot = live)
+        },
+      )
+    result
+      .onSuccess { endpoint ->
+        _selfCheckInHub.value =
+          _selfCheckInHub.value.copy(
+            isServerRunning = true,
+            serverUrl = endpoint.primaryUrl,
+            localTestUrl = endpoint.localTestUrl,
+            isLanAvailable = endpoint.isLanAvailable,
+            serverError = null,
+          )
+        _feedback.tryEmit("Visitor Self Check-In QR Form active at ${endpoint.primaryUrl}")
+      }
+      .onFailure { err ->
+        _selfCheckInHub.value =
+          _selfCheckInHub.value.copy(
+            isServerRunning = false,
+            serverError = err.localizedMessage ?: "Unable to start Self Check-In server",
+          )
+        _feedback.tryEmit(err.localizedMessage ?: "Unable to start Self Check-In server")
+      }
+  }
+
+  fun stopSelfCheckInServer() {
+    selfCheckInWebServer.stop()
+    _selfCheckInHub.value =
+      _selfCheckInHub.value.copy(
+        isServerRunning = false,
+        serverError = null,
+      )
+  }
+
+  fun setAutoCheckInOnSelfSubmit(enabled: Boolean) {
+    _selfCheckInHub.value = _selfCheckInHub.value.copy(autoCheckInOnSubmit = enabled)
+  }
+
+  private suspend fun handleIncomingSelfCheckIn(
+    payload: SelfCheckInPayload,
+    snapshot: DeskSnapshot,
+  ): Result<String> {
+    val office = snapshot.office
+      ?: return Result.failure(IllegalStateException("Office workspace is not ready."))
+    val hosts = snapshot.staff.filter { it.activeAccount && it.hostListed }
+    val defaultHostId =
+      hosts.firstOrNull { it.id == _receptionForm.value.selectedHostId }?.id
+        ?: hosts.firstOrNull()?.id.orEmpty()
+    val resolvedHost = resolveHostFromPayload(payload, snapshot.staff, defaultHostId)
+    val shouldAutoCheckIn =
+      _selfCheckInHub.value.autoCheckInOnSubmit &&
+        resolvedHost != null &&
+        payload.name.isNotBlank() &&
+        payload.mobile.filter { it.isDigit() }.length >= 10
+
+    if (shouldAutoCheckIn && resolvedHost != null) {
+      val digits = payload.mobile.filter { it.isDigit() }
+      val matchedProfile =
+        snapshot.visitorProfiles.firstOrNull { profile ->
+          mobileMatches(profile.mobile, digits) ||
+            (payload.email.isNotBlank() && profile.email.equals(payload.email, ignoreCase = true))
+        }
+      val resolvedReason =
+        payload.reason.ifBlank {
+          matchedProfile?.lastReason?.takeIf { it.isNotBlank() }
+            ?: snapshot.reasons.firstOrNull { it.shown }?.label
+            ?: "Meeting"
+        }
+      val writeResult =
+        repository.checkInVisitor(
+          office = office,
+          mobile = digits,
+          name = payload.name,
+          company = payload.company.ifBlank { matchedProfile?.company.orEmpty() },
+          email = payload.email.ifBlank { matchedProfile?.email.orEmpty() },
+          dob = payload.dob.ifBlank { matchedProfile?.dob.orEmpty() },
+          reason = resolvedReason,
+          remark = payload.remark,
+          host = resolvedHost,
+          existingProfile = matchedProfile,
+        )
+      return writeResult.map {
+        val hostLabel = resolvedHost.shownAs.ifBlank { resolvedHost.fullName }
+        recordSelfSubmission(
+          payload = payload.copy(reason = resolvedReason, hostId = resolvedHost.id, hostName = hostLabel),
+          autoCheckedIn = true,
+          hostName = hostLabel,
+          statusLabel = "Auto-checked in",
+        )
+        _feedback.tryEmit("Self Check-In received: ${payload.name} → $hostLabel")
+        "You are checked in with $hostLabel."
+      }
+    }
+
+    withContext(Dispatchers.Main.immediate) {
+      _receptionForm.value =
+        mergeSelfCheckInIntoForm(
+          current = _receptionForm.value,
+          payload = payload,
+          profiles = snapshot.visitorProfiles,
+          hosts = snapshot.staff,
+          reasons = snapshot.reasons,
+        )
+    }
+    val targetHostLabel = resolvedHost?.let { it.shownAs.ifBlank { it.fullName } } ?: payload.hostName.ifBlank { "Desk" }
+    recordSelfSubmission(
+      payload = payload,
+      autoCheckedIn = false,
+      hostName = targetHostLabel,
+      statusLabel = "Loaded into Form",
+    )
+    _feedback.tryEmit("Visitor form auto-filled from ${payload.source}: ${payload.name}")
+    return Result.success("Your details have been sent to Reception.")
+  }
+
+  private fun recordSelfSubmission(
+    payload: SelfCheckInPayload,
+    autoCheckedIn: Boolean,
+    hostName: String,
+    statusLabel: String,
+  ) {
+    val item =
+      SelfCheckInSubmissionRecord(
+        id = UUID.randomUUID().toString(),
+        payload = payload,
+        receivedAtMillis = System.currentTimeMillis(),
+        autoCheckedIn = autoCheckedIn,
+        assignedHostName = hostName,
+        statusLabel = statusLabel,
+      )
+    _selfCheckInHub.value =
+      _selfCheckInHub.value.copy(
+        recentSubmissions = (listOf(item) + _selfCheckInHub.value.recentSubmissions).take(25),
+      )
+  }
+
+  fun applySubmissionToReceptionForm(
+    record: SelfCheckInSubmissionRecord,
+    snapshot: DeskSnapshot,
+  ) {
+    _receptionForm.value =
+      mergeSelfCheckInIntoForm(
+        current = _receptionForm.value,
+        payload = record.payload,
+        profiles = snapshot.visitorProfiles,
+        hosts = snapshot.staff,
+        reasons = snapshot.reasons,
+      )
+    _feedback.tryEmit("Filled form from ${record.payload.name.ifBlank { record.payload.source }}")
+  }
+
+  fun applyScannedQrRaw(
+    rawText: String,
+    snapshot: DeskSnapshot,
+    autoCheckIn: Boolean = false,
+  ): Boolean {
+    val parsed = VisitorQrCodec.parseQrContent(rawText)
+    if (parsed == null) {
+      _feedback.tryEmit("QR code did not contain readable visitor contact details.")
+      return false
+    }
+    viewModelScope.launch {
+      if (autoCheckIn) {
+        val office = snapshot.office ?: return@launch
+        val host = resolveHostFromPayload(parsed, snapshot.staff, _receptionForm.value.selectedHostId)
+        val digits = parsed.mobile.filter { it.isDigit() }
+        if (host != null && parsed.name.isNotBlank() && digits.length >= 10) {
+          val matched =
+            snapshot.visitorProfiles.firstOrNull {
+              mobileMatches(it.mobile, digits) || (parsed.email.isNotBlank() && it.email.equals(parsed.email, ignoreCase = true))
+            }
+          val reason =
+            parsed.reason.ifBlank {
+              matched?.lastReason?.takeIf { it.isNotBlank() }
+                ?: snapshot.reasons.firstOrNull { it.shown }?.label
+                ?: "Meeting"
+            }
+          repository
+            .checkInVisitor(
+              office = office,
+              mobile = digits,
+              name = parsed.name,
+              company = parsed.company.ifBlank { matched?.company.orEmpty() },
+              email = parsed.email.ifBlank { matched?.email.orEmpty() },
+              dob = parsed.dob.ifBlank { matched?.dob.orEmpty() },
+              reason = reason,
+              remark = parsed.remark,
+              host = host,
+              existingProfile = matched,
+            )
+            .onSuccess {
+              val hostLabel = host.shownAs.ifBlank { host.fullName }
+              recordSelfSubmission(
+                payload = parsed.copy(reason = reason, hostId = host.id, hostName = hostLabel),
+                autoCheckedIn = true,
+                hostName = hostLabel,
+                statusLabel = "QR Auto Check-In",
+              )
+              _feedback.tryEmit("QR checked in ${parsed.name} for $hostLabel")
+            }
+            .onFailure { err ->
+              _feedback.tryEmit(err.localizedMessage ?: "QR check-in failed")
+            }
+          return@launch
+        }
+      }
+
+      _receptionForm.value =
+        mergeSelfCheckInIntoForm(
+          current = _receptionForm.value,
+          payload = parsed,
+          profiles = snapshot.visitorProfiles,
+          hosts = snapshot.staff,
+          reasons = snapshot.reasons,
+        )
+      val hostLabel =
+        resolveHostFromPayload(parsed, snapshot.staff, _receptionForm.value.selectedHostId)
+          ?.let { it.shownAs.ifBlank { it.fullName } }
+          ?: parsed.hostName
+      recordSelfSubmission(
+        payload = parsed,
+        autoCheckedIn = false,
+        hostName = hostLabel,
+        statusLabel = "Scanned via ${parsed.source}",
+      )
+      val display = parsed.name.ifBlank { parsed.mobile.ifBlank { parsed.source } }
+      _feedback.tryEmit("Auto-filled form from ${parsed.source}: $display")
+    }
+    return true
+  }
+
+  fun scanQrFromImageUri(
+    context: Context,
+    imageUri: Uri,
+    snapshot: DeskSnapshot,
+    autoCheckIn: Boolean = false,
+  ) {
+    viewModelScope.launch {
+      try {
+        val scanner = BarcodeScanning.getClient()
+        val inputImage = withContext(Dispatchers.IO) { InputImage.fromFilePath(context, imageUri) }
+        val barcodes = scanner.process(inputImage).await()
+        val raw = barcodes.firstNotNullOfOrNull { it.rawValue?.trim()?.takeIf(String::isNotEmpty) }
+        if (raw == null) {
+          _feedback.tryEmit("No QR code found in the selected image.")
+        } else {
+          applyScannedQrRaw(raw, snapshot, autoCheckIn)
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        _feedback.tryEmit(e.localizedMessage ?: "Failed to read QR code image.")
+      }
+    }
+  }
+
+  fun openVisitorKiosk(snapshot: DeskSnapshot) {
+    val defaultReason = snapshot.reasons.firstOrNull { it.shown }?.label ?: "Meeting"
+    val defaultHost = snapshot.staff.firstOrNull { it.activeAccount && it.hostListed }?.id.orEmpty()
+    _kioskState.value =
+      VisitorKioskState(
+        isActive = true,
+        selectedReason = defaultReason,
+        selectedHostId = defaultHost,
+      )
+  }
+
+  fun closeVisitorKiosk() {
+    _kioskState.value = VisitorKioskState(isActive = false)
+  }
+
+  fun resetKioskForNextVisitor(snapshot: DeskSnapshot) {
+    val defaultReason = snapshot.reasons.firstOrNull { it.shown }?.label ?: "Meeting"
+    val defaultHost = snapshot.staff.firstOrNull { it.activeAccount && it.hostListed }?.id.orEmpty()
+    _kioskState.value =
+      VisitorKioskState(
+        isActive = true,
+        selectedReason = defaultReason,
+        selectedHostId = defaultHost,
+      )
+  }
+
+  fun onKioskMobileChanged(
+    input: String,
+    profiles: List<VisitorProfile>,
+    hosts: List<StaffMember>,
+  ) {
+    val digits = input.filter { it.isDigit() }.take(15)
+    val current = _kioskState.value
+    if (digits.length >= 10 && digits != "919999999999" && digits != current.suppressedAutoMatchMobile) {
+      val match = profiles.firstOrNull { mobileMatches(it.mobile, digits) }
+      if (match != null) {
+        val validHostId = hosts.firstOrNull { it.id == match.lastHostStaffId }?.id ?: current.selectedHostId
+        val validReason = match.lastReason.takeIf { it.isNotBlank() } ?: current.selectedReason
+        _kioskState.value =
+          current.copy(
+            mobile = digits,
+            name = match.name,
+            company = match.company,
+            email = match.email,
+            dob = match.dob.ifBlank { current.dob },
+            selectedHostId = validHostId,
+            selectedReason = validReason,
+            matchedProfile = match,
+          )
+        return
+      }
+    }
+    _kioskState.value =
+      current.copy(
+        mobile = digits,
+        matchedProfile = if (current.matchedProfile?.let { mobileMatches(it.mobile, digits) } == true) current.matchedProfile else null,
+      )
+  }
+
+  fun clearKioskReturningMatch() {
+    val current = _kioskState.value
+    _kioskState.value =
+      current.copy(
+        name = "",
+        company = "",
+        email = "",
+        dob = "",
+        remark = "",
+        matchedProfile = null,
+        suppressedAutoMatchMobile = current.mobile,
+      )
+  }
+
+  fun onKioskNameChanged(value: String) {
+    _kioskState.value = _kioskState.value.copy(name = value)
+  }
+
+  fun onKioskCompanyChanged(value: String) {
+    _kioskState.value = _kioskState.value.copy(company = value)
+  }
+
+  fun onKioskEmailChanged(value: String) {
+    _kioskState.value = _kioskState.value.copy(email = value)
+  }
+
+  fun onKioskDobChanged(value: String) {
+    _kioskState.value = _kioskState.value.copy(dob = value)
+  }
+
+  fun onKioskRemarkChanged(value: String) {
+    _kioskState.value = _kioskState.value.copy(remark = value)
+  }
+
+  fun onKioskHostSelected(hostId: String) {
+    _kioskState.value = _kioskState.value.copy(selectedHostId = hostId)
+  }
+
+  fun onKioskReasonSelected(reason: String) {
+    _kioskState.value = _kioskState.value.copy(selectedReason = reason)
+  }
+
+  fun applyQrToKiosk(rawText: String, snapshot: DeskSnapshot): Boolean {
+    val parsed = VisitorQrCodec.parseQrContent(rawText)
+    if (parsed == null) {
+      _feedback.tryEmit("Could not read visitor details from that QR code.")
+      return false
+    }
+    val merged =
+      mergeSelfCheckInIntoForm(
+        current =
+          ReceptionFormState(
+            mobile = _kioskState.value.mobile,
+            name = _kioskState.value.name,
+            company = _kioskState.value.company,
+            email = _kioskState.value.email,
+            dob = _kioskState.value.dob,
+            remark = _kioskState.value.remark,
+            selectedReason = _kioskState.value.selectedReason,
+            selectedHostId = _kioskState.value.selectedHostId,
+            matchedProfile = _kioskState.value.matchedProfile,
+          ),
+        payload = parsed,
+        profiles = snapshot.visitorProfiles,
+        hosts = snapshot.staff,
+        reasons = snapshot.reasons,
+      )
+    _kioskState.value =
+      _kioskState.value.copy(
+        mobile = merged.mobile,
+        name = merged.name,
+        company = merged.company,
+        email = merged.email,
+        dob = merged.dob,
+        remark = merged.remark,
+        selectedReason = merged.selectedReason,
+        selectedHostId = merged.selectedHostId,
+        matchedProfile = merged.matchedProfile,
+      )
+    _feedback.tryEmit("Pre-filled from ${parsed.source}")
+    return true
+  }
+
+  fun scanQrFromImageUriForKiosk(
+    context: Context,
+    imageUri: Uri,
+    snapshot: DeskSnapshot,
+  ) {
+    viewModelScope.launch {
+      try {
+        val scanner = BarcodeScanning.getClient()
+        val inputImage = withContext(Dispatchers.IO) { InputImage.fromFilePath(context, imageUri) }
+        val barcodes = scanner.process(inputImage).await()
+        val raw = barcodes.firstNotNullOfOrNull { it.rawValue?.trim()?.takeIf(String::isNotEmpty) }
+        if (raw == null) {
+          _feedback.tryEmit("No QR code found in the selected image.")
+        } else {
+          applyQrToKiosk(raw, snapshot)
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        _feedback.tryEmit(e.localizedMessage ?: "Failed to read QR code image.")
+      }
+    }
+  }
+
+  fun scanCardForKiosk(context: Context, imageUri: Uri, snapshot: DeskSnapshot) {
+    viewModelScope.launch {
+      _kioskState.value = _kioskState.value.copy(isScanningCard = true)
+      try {
+        val bitmap = cardScanner.loadScaledCardBitmap(context, imageUri)
+        val result = cardScanner.extractFromBitmap(bitmap)
+        result
+          .onSuccess { extracted ->
+            val merged =
+              mergeScannedCardIntoForm(
+                current =
+                  ReceptionFormState(
+                    mobile = _kioskState.value.mobile,
+                    name = _kioskState.value.name,
+                    company = _kioskState.value.company,
+                    email = _kioskState.value.email,
+                    dob = _kioskState.value.dob,
+                    remark = _kioskState.value.remark,
+                    selectedReason = _kioskState.value.selectedReason,
+                    selectedHostId = _kioskState.value.selectedHostId,
+                    matchedProfile = _kioskState.value.matchedProfile,
+                  ),
+                extracted = extracted,
+                profiles = snapshot.visitorProfiles,
+                hosts = snapshot.staff,
+              )
+            _kioskState.value =
+              _kioskState.value.copy(
+                isScanningCard = false,
+                mobile = merged.mobile,
+                name = merged.name,
+                company = merged.company,
+                email = merged.email,
+                dob = merged.dob,
+                remark = merged.remark,
+                selectedReason = merged.selectedReason,
+                selectedHostId = merged.selectedHostId,
+                matchedProfile = merged.matchedProfile,
+              )
+            _feedback.tryEmit("Details scanned from your card")
+          }
+          .onFailure { err ->
+            _kioskState.value = _kioskState.value.copy(isScanningCard = false)
+            _feedback.tryEmit(err.localizedMessage ?: "Unable to read card")
+          }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        _kioskState.value = _kioskState.value.copy(isScanningCard = false)
+        _feedback.tryEmit(e.localizedMessage ?: "Failed to read card image")
+      }
+    }
+  }
+
+  fun submitKioskCheckIn(snapshot: DeskSnapshot) {
+    val office = snapshot.office ?: return
+    val kiosk = _kioskState.value
+    if (kiosk.isSubmitting) return
+    val asForm =
+      ReceptionFormState(
+        mobile = kiosk.mobile,
+        name = kiosk.name,
+        company = kiosk.company,
+        email = kiosk.email,
+        dob = kiosk.dob,
+        remark = kiosk.remark,
+        selectedReason = kiosk.selectedReason,
+        selectedHostId = kiosk.selectedHostId,
+      )
+    val validationError = validateReceptionCheckIn(asForm, snapshot.staff)
+    if (validationError != null) {
+      _feedback.tryEmit(validationError)
+      return
+    }
+    val host = snapshot.staff.first { it.id == kiosk.selectedHostId && it.activeAccount }
+    _kioskState.value = kiosk.copy(isSubmitting = true)
+    viewModelScope.launch {
+      val matchedForPhone =
+        kiosk.matchedProfile?.takeIf {
+          it.id.isNotBlank() && (it.mobile == kiosk.mobile.filter { ch -> ch.isDigit() } || it.mobile.isBlank())
+        }
+      val result =
+        repository.checkInVisitor(
+          office = office,
+          mobile = kiosk.mobile,
+          name = kiosk.name,
+          company = kiosk.company,
+          email = kiosk.email,
+          dob = kiosk.dob,
+          reason = kiosk.selectedReason,
+          remark = kiosk.remark,
+          host = host,
+          existingProfile = matchedForPhone,
+        )
+      result
+        .onSuccess {
+          val hostLabel = host.shownAs.ifBlank { host.fullName }
+          val cabinLabel = host.formattedSeating().ifBlank { host.cabin }
+          val payload =
+            SelfCheckInPayload(
+              name = kiosk.name.trim(),
+              mobile = kiosk.mobile.filter { it.isDigit() },
+              company = kiosk.company.trim(),
+              email = kiosk.email.trim(),
+              dob = kiosk.dob.trim(),
+              reason = kiosk.selectedReason.trim(),
+              hostId = host.id,
+              hostName = hostLabel,
+              remark = kiosk.remark.trim(),
+              source = "Tablet Kiosk",
+            )
+          recordSelfSubmission(
+            payload = payload,
+            autoCheckedIn = true,
+            hostName = hostLabel,
+            statusLabel = "Kiosk Self Check-In",
+          )
+          _kioskState.value =
+            _kioskState.value.copy(
+              isSubmitting = false,
+              completedVisitorName = kiosk.name.trim(),
+              completedHostName = hostLabel,
+              completedHostCabin = cabinLabel,
+              completedPassQrText = VisitorQrCodec.encodeArchPointPass(payload),
+            )
+        }
+        .onFailure { err ->
+          _kioskState.value = _kioskState.value.copy(isSubmitting = false)
+          _feedback.tryEmit(err.localizedMessage ?: "Self check-in failed")
+        }
+    }
+  }
+
+  override fun onCleared() {
+    selfCheckInWebServer.stop()
+    super.onCleared()
   }
 
   // --- VISIT STATE ACTIONS ---
@@ -1623,12 +2291,22 @@ class MainViewModel(
       val res = repository.upsertAppointment(office, existing, model, isHostSelfEdit = isHostOnly)
       _isBusy.value = false
       res
-        .onSuccess {
+        .onSuccess { persisted ->
           val day = DeskFormatters.formatAppointmentDayLabel(cleanDate)
-          _feedback.tryEmit(
-            if (existing == null) "Booked ${model.visitorName} for $resolvedHostName ($day · $cleanTime)"
-            else "Updated appointment for ${model.visitorName}"
-          )
+          val token = calendarAccessToken
+          if (token != null) {
+            val calNote = pushSingleAppointmentWithToken(token, snapshot, persisted)
+            _feedback.tryEmit(
+              if (existing == null) "Booked ${persisted.visitorName} for $resolvedHostName ($day · $cleanTime)$calNote"
+              else "Updated appointment for ${persisted.visitorName}$calNote",
+            )
+            refreshCalendarEventsInternal(token)
+          } else {
+            _feedback.tryEmit(
+              if (existing == null) "Booked ${persisted.visitorName} for $resolvedHostName ($day · $cleanTime)"
+              else "Updated appointment for ${persisted.visitorName}",
+            )
+          }
         }
         .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to save appointment") }
     }
@@ -1645,6 +2323,23 @@ class MainViewModel(
       repository
         .updateAppointmentStatus(officeId, appointment.id, newStatus)
         .onSuccess {
+          val token = calendarAccessToken
+          if (newStatus == AppointmentStatus.CANCELLED && token != null && appointment.calendarEventId.isNotBlank()) {
+            when (calendarService.cancelEvent(token, appointment.calendarEventId)) {
+              is CalendarApiResult.Success -> {
+                repository.updateAppointmentCalendarMetadata(
+                  officeId = officeId,
+                  appointmentId = appointment.id,
+                  calendarEventId = "",
+                  calendarHtmlLink = "",
+                  calendarSyncedEmail = "",
+                )
+                refreshCalendarEventsInternal(token)
+              }
+              CalendarApiResult.AuthExpired -> handleCalendarAuthExpired()
+              is CalendarApiResult.Failure -> Unit
+            }
+          }
           _feedback.tryEmit("Appointment for ${appointment.visitorName} marked ${newStatus.label}")
         }
         .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to update appointment") }
@@ -1692,9 +2387,334 @@ class MainViewModel(
     viewModelScope.launch {
       repository
         .deleteAppointment(officeId, appointment.id)
-        .onSuccess { _feedback.tryEmit("Deleted appointment for ${appointment.visitorName}") }
+        .onSuccess {
+          val token = calendarAccessToken
+          if (token != null && appointment.calendarEventId.isNotBlank()) {
+            when (calendarService.cancelEvent(token, appointment.calendarEventId)) {
+              is CalendarApiResult.Success -> refreshCalendarEventsInternal(token)
+              CalendarApiResult.AuthExpired -> handleCalendarAuthExpired()
+              is CalendarApiResult.Failure -> Unit
+            }
+          }
+          _feedback.tryEmit("Deleted appointment for ${appointment.visitorName}")
+        }
         .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to delete appointment") }
     }
+  }
+
+  // --- GOOGLE CALENDAR INTEGRATION ---
+
+  fun trySilentCalendarConnect(context: Context, snapshot: DeskSnapshot?) {
+    if (calendarAccessToken != null) {
+      if (_googleCalendarState.value.lastSyncedMillis == 0L) {
+        viewModelScope.launch {
+          calendarAccessToken?.let { syncCalendarAndEvents(it, snapshot, showToast = false) }
+        }
+      }
+      return
+    }
+    if (silentCalendarChecked || normalizedEmail.isBlank()) return
+    silentCalendarChecked = true
+    viewModelScope.launch {
+      when (val auth = GoogleCalendarAuthHelper.authorize(context)) {
+        is CalendarAuthState.Authorized -> {
+          calendarAccessToken = auth.accessToken
+          _googleCalendarState.value =
+            _googleCalendarState.value.copy(
+              isConnected = true,
+              isConnecting = false,
+              connectedEmail = normalizedEmail,
+              errorMessage = null,
+            )
+          syncCalendarAndEvents(auth.accessToken, snapshot, showToast = false)
+        }
+        is CalendarAuthState.NeedsConsent,
+        is CalendarAuthState.Error -> {
+          // Stay disconnected silently until the user taps Connect Google Calendar
+        }
+      }
+    }
+  }
+
+  fun connectOrSyncGoogleCalendar(context: Context, snapshot: DeskSnapshot?) {
+    pendingSyncSnapshot = snapshot
+    val existingToken = calendarAccessToken
+    if (existingToken != null) {
+      viewModelScope.launch {
+        syncCalendarAndEvents(existingToken, snapshot, showToast = true)
+      }
+      return
+    }
+    if (_googleCalendarState.value.isConnecting) return
+    _googleCalendarState.value =
+      _googleCalendarState.value.copy(isConnecting = true, errorMessage = null)
+    viewModelScope.launch {
+      when (val auth = GoogleCalendarAuthHelper.authorize(context)) {
+        is CalendarAuthState.Authorized -> {
+          calendarAccessToken = auth.accessToken
+          _googleCalendarState.value =
+            _googleCalendarState.value.copy(
+              isConnected = true,
+              isConnecting = false,
+              connectedEmail = normalizedEmail,
+              errorMessage = null,
+              pendingConsentIntentSender = null,
+            )
+          syncCalendarAndEvents(auth.accessToken, snapshot, showToast = true)
+        }
+        is CalendarAuthState.NeedsConsent -> {
+          _googleCalendarState.value =
+            _googleCalendarState.value.copy(
+              isConnecting = false,
+              pendingConsentIntentSender = auth.intentSender,
+            )
+        }
+        is CalendarAuthState.Error -> {
+          pendingSingleAppointment = null
+          _googleCalendarState.value =
+            _googleCalendarState.value.copy(
+              isConnecting = false,
+              errorMessage = auth.message,
+            )
+          _feedback.tryEmit(auth.message)
+        }
+      }
+    }
+  }
+
+  fun consumeCalendarConsentPrompt() {
+    if (_googleCalendarState.value.pendingConsentIntentSender != null) {
+      _googleCalendarState.value = _googleCalendarState.value.copy(pendingConsentIntentSender = null)
+    }
+  }
+
+  fun onCalendarConsentResult(
+    context: Context,
+    data: Intent?,
+    snapshot: DeskSnapshot?,
+  ) {
+    val activeSnapshot = snapshot ?: pendingSyncSnapshot
+    when (val auth = GoogleCalendarAuthHelper.extractTokenFromIntent(context, data)) {
+      is CalendarAuthState.Authorized -> {
+        calendarAccessToken = auth.accessToken
+        _googleCalendarState.value =
+          _googleCalendarState.value.copy(
+            isConnected = true,
+            isConnecting = false,
+            connectedEmail = normalizedEmail,
+            errorMessage = null,
+            pendingConsentIntentSender = null,
+          )
+        viewModelScope.launch {
+          syncCalendarAndEvents(auth.accessToken, activeSnapshot, showToast = true)
+        }
+      }
+      is CalendarAuthState.Error -> {
+        pendingSingleAppointment = null
+        _googleCalendarState.value =
+          _googleCalendarState.value.copy(
+            isConnecting = false,
+            errorMessage = auth.message,
+            pendingConsentIntentSender = null,
+          )
+        _feedback.tryEmit(auth.message)
+      }
+      is CalendarAuthState.NeedsConsent -> {
+        _googleCalendarState.value =
+          _googleCalendarState.value.copy(
+            isConnecting = false,
+            pendingConsentIntentSender = auth.intentSender,
+          )
+      }
+    }
+  }
+
+  fun disconnectGoogleCalendar() {
+    calendarAccessToken = null
+    pendingSingleAppointment = null
+    pendingSyncSnapshot = null
+    _googleCalendarState.value = GoogleCalendarUiState()
+    _feedback.tryEmit("Disconnected Google Calendar")
+  }
+
+  fun syncSingleAppointmentToCalendar(
+    context: Context,
+    snapshot: DeskSnapshot,
+    appointment: Appointment,
+  ) {
+    val token = calendarAccessToken
+    if (token == null) {
+      pendingSingleAppointment = appointment
+      connectOrSyncGoogleCalendar(context, snapshot)
+      return
+    }
+    viewModelScope.launch {
+      _googleCalendarState.value = _googleCalendarState.value.copy(isSyncing = true, errorMessage = null)
+      val note = pushSingleAppointmentWithToken(token, snapshot, appointment)
+      refreshCalendarEventsInternal(token)
+      _googleCalendarState.value = _googleCalendarState.value.copy(isSyncing = false)
+      if (note.isNotBlank()) {
+        _feedback.tryEmit("${appointment.visitorName}$note")
+      }
+    }
+  }
+
+  private suspend fun pushSingleAppointmentWithToken(
+    token: String,
+    snapshot: DeskSnapshot?,
+    appointment: Appointment,
+  ): String {
+    val officeId = snapshot?.office?.id.orEmpty()
+    return when (val result = calendarService.upsertAppointmentEvent(token, appointment)) {
+      is CalendarApiResult.Success -> {
+        if (officeId.isNotBlank() && appointment.id.isNotBlank()) {
+          repository.updateAppointmentCalendarMetadata(
+            officeId = officeId,
+            appointmentId = appointment.id,
+            calendarEventId = result.data.eventId,
+            calendarHtmlLink = result.data.htmlLink,
+            calendarSyncedEmail = normalizedEmail,
+          )
+        }
+        " · Added to Google Calendar"
+      }
+      CalendarApiResult.AuthExpired -> {
+        handleCalendarAuthExpired()
+        ""
+      }
+      is CalendarApiResult.Failure -> {
+        _googleCalendarState.value = _googleCalendarState.value.copy(errorMessage = result.message)
+        ""
+      }
+    }
+  }
+
+  private suspend fun syncCalendarAndEvents(
+    token: String,
+    snapshot: DeskSnapshot?,
+    showToast: Boolean,
+  ) {
+    _googleCalendarState.value = _googleCalendarState.value.copy(isSyncing = true, errorMessage = null)
+    var syncedCount = 0
+    val queued = pendingSingleAppointment
+    pendingSingleAppointment = null
+
+    val officeId = snapshot?.office?.id.orEmpty()
+    if (queued != null) {
+      when (val res = calendarService.upsertAppointmentEvent(token, queued)) {
+        is CalendarApiResult.Success -> {
+          syncedCount++
+          if (officeId.isNotBlank() && queued.id.isNotBlank()) {
+            repository.updateAppointmentCalendarMetadata(
+              officeId = officeId,
+              appointmentId = queued.id,
+              calendarEventId = res.data.eventId,
+              calendarHtmlLink = res.data.htmlLink,
+              calendarSyncedEmail = normalizedEmail,
+            )
+          }
+        }
+        CalendarApiResult.AuthExpired -> {
+          handleCalendarAuthExpired()
+          return
+        }
+        is CalendarApiResult.Failure -> {
+          _googleCalendarState.value = _googleCalendarState.value.copy(errorMessage = res.message)
+        }
+      }
+    }
+
+    if (snapshot != null && officeId.isNotBlank() && normalizedEmail.isNotBlank()) {
+      val hostUpcoming =
+        upcomingScheduledAppointments(
+          filterHostSpecificAppointments(
+            appointments = snapshot.appointments,
+            userEmail = normalizedEmail,
+            staffId = snapshot.currentStaff?.id,
+          ),
+        )
+      val toPush =
+        hostUpcoming.filter { appt ->
+          appt.id != queued?.id &&
+            (appt.calendarEventId.isBlank() ||
+              !appt.calendarSyncedEmail.equals(normalizedEmail, ignoreCase = true))
+        }
+      for (appt in toPush) {
+        when (val res = calendarService.upsertAppointmentEvent(token, appt)) {
+          is CalendarApiResult.Success -> {
+            syncedCount++
+            repository.updateAppointmentCalendarMetadata(
+              officeId = officeId,
+              appointmentId = appt.id,
+              calendarEventId = res.data.eventId,
+              calendarHtmlLink = res.data.htmlLink,
+              calendarSyncedEmail = normalizedEmail,
+            )
+          }
+          CalendarApiResult.AuthExpired -> {
+            handleCalendarAuthExpired()
+            return
+          }
+          is CalendarApiResult.Failure -> {
+            _googleCalendarState.value = _googleCalendarState.value.copy(errorMessage = res.message)
+          }
+        }
+      }
+    }
+
+    val fetchedOk = refreshCalendarEventsInternal(token)
+    if (showToast && fetchedOk) {
+      val eventCount = _googleCalendarState.value.events.size
+      val msg =
+        if (syncedCount > 0) {
+          "Synced $syncedCount appointment(s) & loaded $eventCount Google Calendar events"
+        } else {
+          "Google Calendar synced · $eventCount upcoming events for $normalizedEmail"
+        }
+      _feedback.tryEmit(msg)
+    }
+  }
+
+  private suspend fun refreshCalendarEventsInternal(token: String): Boolean {
+    return when (val result = calendarService.fetchUpcomingEvents(token)) {
+      is CalendarApiResult.Success -> {
+        _googleCalendarState.value =
+          _googleCalendarState.value.copy(
+            isConnected = true,
+            isConnecting = false,
+            isSyncing = false,
+            connectedEmail = normalizedEmail,
+            events = result.data,
+            lastSyncedMillis = System.currentTimeMillis(),
+            errorMessage = null,
+          )
+        true
+      }
+      CalendarApiResult.AuthExpired -> {
+        handleCalendarAuthExpired()
+        false
+      }
+      is CalendarApiResult.Failure -> {
+        _googleCalendarState.value =
+          _googleCalendarState.value.copy(
+            isSyncing = false,
+            errorMessage = result.message,
+          )
+        false
+      }
+    }
+  }
+
+  private fun handleCalendarAuthExpired() {
+    calendarAccessToken = null
+    _googleCalendarState.value =
+      _googleCalendarState.value.copy(
+        isConnected = false,
+        isConnecting = false,
+        isSyncing = false,
+        errorMessage = "Google Calendar session expired. Tap Sync to reconnect.",
+      )
+    _feedback.tryEmit("Google Calendar session expired. Tap Sync to reconnect.")
   }
 
   // --- COMPUTED BOARD HELPERS ---
@@ -2063,6 +3083,77 @@ class MainViewModel(
         remark = cardRemark.ifBlank { current.remark },
         selectedHostId = validHostId,
         selectedReason = validReason,
+        matchedProfile = matchedProfile ?: current.matchedProfile,
+        suppressedAutoMatchMobile = "",
+      )
+    }
+
+    fun resolveHostFromPayload(
+      payload: SelfCheckInPayload,
+      staff: List<StaffMember>,
+      fallbackHostId: String,
+    ): StaffMember? {
+      val hosts = staff.filter { it.activeAccount && it.hostListed }
+      if (hosts.isEmpty()) return null
+      if (payload.hostId.isNotBlank()) {
+        hosts.firstOrNull { it.id == payload.hostId }?.let { return it }
+      }
+      if (payload.hostName.isNotBlank()) {
+        val q = payload.hostName.trim().lowercase()
+        hosts.firstOrNull {
+          it.shownAs.trim().lowercase() == q ||
+            it.fullName.trim().lowercase() == q ||
+            it.shownAs.trim().lowercase().contains(q) ||
+            it.fullName.trim().lowercase().contains(q)
+        }?.let { return it }
+      }
+      return hosts.firstOrNull { it.id == fallbackHostId } ?: hosts.firstOrNull()
+    }
+
+    fun mobileMatches(storedMobile: String, inputDigits: String): Boolean {
+      val cleanStored = storedMobile.filter { it.isDigit() }
+      val cleanInput = inputDigits.filter { it.isDigit() }
+      if (cleanStored.length < 10 || cleanInput.length < 10) return false
+      if (cleanStored == "919999999999" || cleanInput == "919999999999") return false
+      if (cleanStored == cleanInput) return true
+      return cleanStored.takeLast(10) == cleanInput.takeLast(10)
+    }
+
+    fun mergeSelfCheckInIntoForm(
+      current: ReceptionFormState,
+      payload: SelfCheckInPayload,
+      profiles: List<VisitorProfile>,
+      hosts: List<StaffMember>,
+      reasons: List<VisitReason>,
+    ): ReceptionFormState {
+      val digits = payload.mobile.filter { it.isDigit() }.take(15)
+      val matchedProfile =
+        profiles.firstOrNull { profile ->
+          (digits.length >= 10 && mobileMatches(profile.mobile, digits)) ||
+            (payload.email.isNotBlank() && profile.email.equals(payload.email, ignoreCase = true))
+        }
+      val resolvedHost =
+        resolveHostFromPayload(
+          payload = payload,
+          staff = hosts,
+          fallbackHostId = matchedProfile?.lastHostStaffId ?: current.selectedHostId,
+        )
+      val matchedReason =
+        payload.reason.trim().takeIf { it.isNotBlank() }?.let { raw ->
+          reasons.firstOrNull { it.label.equals(raw, ignoreCase = true) }?.label ?: raw
+        }
+          ?: matchedProfile?.lastReason?.takeIf { it.isNotBlank() }
+          ?: current.selectedReason
+
+      return current.copy(
+        mobile = digits.ifBlank { current.mobile },
+        name = payload.name.ifBlank { matchedProfile?.name ?: current.name },
+        company = payload.company.ifBlank { matchedProfile?.company ?: current.company },
+        email = payload.email.ifBlank { matchedProfile?.email ?: current.email },
+        dob = payload.dob.ifBlank { matchedProfile?.dob ?: current.dob },
+        remark = payload.remark.ifBlank { current.remark },
+        selectedHostId = resolvedHost?.id ?: current.selectedHostId,
+        selectedReason = matchedReason,
         matchedProfile = matchedProfile ?: current.matchedProfile,
         suppressedAutoMatchMobile = "",
       )

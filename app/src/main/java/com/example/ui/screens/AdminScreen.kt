@@ -30,6 +30,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -42,6 +43,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -695,7 +697,40 @@ private fun ArchPointSyncCard(
   isBusy: Boolean,
   onSyncArchPointData: () -> Unit,
 ) {
+  var showConfirmDialog by remember { mutableStateOf(false) }
   val pastVisitCount = snapshot.visits.count { it.id.startsWith("visit_past_") }
+
+  if (showConfirmDialog) {
+    AlertDialog(
+      onDismissRequest = { showConfirmDialog = false },
+      title = { Text("Replace Visitor Info?") },
+      text = {
+        Text(
+          "This will remove all old visitor logs & profiles and load the latest 55 ArchPoint visitor records. Your scheduled appointments (${snapshot.appointments.size}), staff directory, and reasons will NOT be deleted."
+        )
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            showConfirmDialog = false
+            onSyncArchPointData()
+          },
+          modifier = Modifier.heightIn(min = 48.dp).testTag("confirm_replace_archpoint_data"),
+        ) {
+          Text("Replace & Import")
+        }
+      },
+      dismissButton = {
+        TextButton(
+          onClick = { showConfirmDialog = false },
+          modifier = Modifier.heightIn(min = 48.dp),
+        ) {
+          Text("Cancel")
+        }
+      },
+    )
+  }
+
   GlassCard {
     Row(verticalAlignment = Alignment.CenterVertically) {
       Icon(
@@ -708,19 +743,19 @@ private fun ArchPointSyncCard(
       Text("ArchPoint Directory & Past Records", style = MaterialTheme.typography.titleMedium)
     }
     Text(
-      "Currently ${snapshot.staff.size} team members & $pastVisitCount imported past visitor entries.",
+      "Currently ${snapshot.staff.size} team members, ${snapshot.visits.size} visitor logs ($pastVisitCount imported) & ${snapshot.appointments.size} appointments.",
       style = MaterialTheme.typography.bodySmall,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     OutlinedButton(
-      onClick = onSyncArchPointData,
+      onClick = { showConfirmDialog = true },
       enabled = !isBusy,
       shape = RoundedCornerShape(12.dp),
       modifier = Modifier.fillMaxWidth().height(48.dp).testTag("sync_archpoint_data_button"),
     ) {
       Icon(Icons.Rounded.CloudSync, contentDescription = null, modifier = Modifier.size(18.dp))
       Spacer(Modifier.width(8.dp))
-      Text("Sync ArchPoint Team & Past Visitor Data")
+      Text("Replace Old Visitor Info & Load 55 Records")
     }
   }
 }

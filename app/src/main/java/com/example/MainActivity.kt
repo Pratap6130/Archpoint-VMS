@@ -13,6 +13,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -76,6 +77,7 @@ import com.example.ui.components.ArchPointNavRail
 import com.example.ui.components.CompactAlertsPromptBanner
 import com.example.ui.components.GlassBackdrop
 import com.example.ui.components.HostDashboard
+import com.example.ui.components.VisitorKioskOverlay
 import com.example.ui.screens.AccessNotAssignedScreen
 import com.example.ui.screens.AccountDeactivatedScreen
 import com.example.ui.screens.AdminScreen
@@ -259,6 +261,9 @@ private fun AuthenticatedDeskHost(
   val cardScanState by viewModel.cardScanState.collectAsStateWithLifecycle()
   val nowMillis by viewModel.nowMillis.collectAsStateWithLifecycle()
   val inFlightVisitIds by viewModel.inFlightVisitIds.collectAsStateWithLifecycle()
+  val googleCalendarState by viewModel.googleCalendarState.collectAsStateWithLifecycle()
+  val selfCheckInHub by viewModel.selfCheckInHub.collectAsStateWithLifecycle()
+  val kioskState by viewModel.kioskState.collectAsStateWithLifecycle()
 
   val snackbarHostState = remember { SnackbarHostState() }
 
@@ -358,6 +363,31 @@ private fun AuthenticatedDeskHost(
           viewModel.selectTab(pendingTab)
           onConsumedPendingTab()
         }
+      }
+
+      val calendarConsentLauncher =
+        rememberLauncherForActivityResult(
+          contract = ActivityResultContracts.StartIntentSenderForResult(),
+        ) { activityResult ->
+          viewModel.onCalendarConsentResult(
+            context = context,
+            data = activityResult.data,
+            snapshot = snapshot,
+          )
+        }
+
+      LaunchedEffect(googleCalendarState.pendingConsentIntentSender) {
+        val sender = googleCalendarState.pendingConsentIntentSender
+        if (sender != null) {
+          viewModel.consumeCalendarConsentPrompt()
+          runCatching {
+            calendarConsentLauncher.launch(IntentSenderRequest.Builder(sender).build())
+          }
+        }
+      }
+
+      LaunchedEffect(officeId, currentUserEmail) {
+        viewModel.trySilentCalendarConnect(context = context, snapshot = snapshot)
       }
 
       if (activeTab != defaultTab) {
@@ -577,6 +607,7 @@ private fun AuthenticatedDeskHost(
                         hostBoard = hostBoard,
                         nowMillis = nowMillis,
                         appointments = snapshot.appointments,
+                        calendarState = googleCalendarState,
                         isBusy = isBusy,
                         onSearchQueryChanged = { viewModel.onVisitorSearchQueryChanged(officeId, it) },
                         onTriggerSearch = { viewModel.triggerVisitorSearch(officeId) },
@@ -642,6 +673,27 @@ private fun AuthenticatedDeskHost(
                         onUpdateAppointmentStatus = { appt, newStatus ->
                           viewModel.updateAppointmentStatus(snapshot, appt, newStatus)
                         },
+                        onConnectOrSyncCalendar = {
+                          viewModel.connectOrSyncGoogleCalendar(context, snapshot)
+                        },
+                        onSyncAppointmentToCalendar = { appt ->
+                          viewModel.syncSingleAppointmentToCalendar(context, snapshot, appt)
+                        },
+                        selfCheckInHub = selfCheckInHub,
+                        onToggleSelfCheckInServer = { viewModel.toggleSelfCheckInServer(snapshot) },
+                        onSetAutoCheckInOnSelfSubmit = { enabled ->
+                          viewModel.setAutoCheckInOnSelfSubmit(enabled)
+                        },
+                        onApplySelfSubmission = { record ->
+                          viewModel.applySubmissionToReceptionForm(record, snapshot)
+                        },
+                        onScanQrRaw = { raw, autoCheckIn ->
+                          viewModel.applyScannedQrRaw(raw, snapshot, autoCheckIn)
+                        },
+                        onScanQrImageUri = { uri, autoCheckIn ->
+                          viewModel.scanQrFromImageUri(context, uri, snapshot, autoCheckIn)
+                        },
+                        onOpenVisitorKiosk = { viewModel.openVisitorKiosk(snapshot) },
                       )
 
                     AppTab.MY_VISITORS ->
@@ -652,6 +704,7 @@ private fun AuthenticatedDeskHost(
                         nowMillis = nowMillis,
                         inFlightVisitIds = inFlightVisitIds,
                         appointments = snapshot.appointments,
+                        calendarState = googleCalendarState,
                         isBusy = isBusy,
                         onUpdateAvailability = { availability ->
                           viewModel.updateOwnAvailabilityStatus(snapshot, availability)
@@ -685,6 +738,12 @@ private fun AuthenticatedDeskHost(
                         onUpdateAppointmentStatus = { appt, newStatus ->
                           viewModel.updateAppointmentStatus(snapshot, appt, newStatus)
                         },
+                        onConnectOrSyncCalendar = {
+                          viewModel.connectOrSyncGoogleCalendar(context, snapshot)
+                        },
+                        onSyncAppointmentToCalendar = { appt ->
+                          viewModel.syncSingleAppointmentToCalendar(context, snapshot, appt)
+                        },
                       )
 
                     AppTab.VISITOR_LOG ->
@@ -692,6 +751,8 @@ private fun AuthenticatedDeskHost(
                         visits = snapshot.visits,
                         staff = snapshot.staff,
                         nowMillis = nowMillis,
+                        isBusy = isBusy,
+                        onSyncArchPointData = { viewModel.syncArchPointSeedData(snapshot) },
                         onToastMessage = { msg ->
                           viewModel.selectTab(AppTab.VISITOR_LOG)
                           android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT)
@@ -822,6 +883,11 @@ private fun AuthenticatedDeskHost(
                         notificationsEnabled = notificationsEnabled,
                         backgroundServiceRunning = backgroundAlertsEnabled,
                         isBusy = isBusy,
+                        calendarState = googleCalendarState,
+                        onConnectOrSyncCalendar = {
+                          viewModel.connectOrSyncGoogleCalendar(context, snapshot)
+                        },
+                        onDisconnectCalendar = { viewModel.disconnectGoogleCalendar() },
                         onSelectTheme = onSelectTheme,
                         onSaveOwnProfile = { fullName, shownAs, designation, department, photoUrl, floor, cabin, otherLocation, requiredThings, notes ->
                           viewModel.updateOwnProfile(
@@ -849,6 +915,35 @@ private fun AuthenticatedDeskHost(
                 }
               }
             }
+          }
+
+          if (kioskState.isActive) {
+            VisitorKioskOverlay(
+              snapshot = snapshot,
+              hostBoard = hostBoard,
+              kioskState = kioskState,
+              onMobileChanged = {
+                viewModel.onKioskMobileChanged(
+                  input = it,
+                  profiles = snapshot.visitorProfiles,
+                  hosts = hostBoard.map { item -> item.staff },
+                )
+              },
+              onNameChanged = { viewModel.onKioskNameChanged(it) },
+              onCompanyChanged = { viewModel.onKioskCompanyChanged(it) },
+              onEmailChanged = { viewModel.onKioskEmailChanged(it) },
+              onDobChanged = { viewModel.onKioskDobChanged(it) },
+              onRemarkChanged = { viewModel.onKioskRemarkChanged(it) },
+              onHostSelected = { viewModel.onKioskHostSelected(it) },
+              onReasonSelected = { viewModel.onKioskReasonSelected(it) },
+              onClearReturningMatch = { viewModel.clearKioskReturningMatch() },
+              onScanCardUri = { uri -> viewModel.scanCardForKiosk(context, uri, snapshot) },
+              onQrScanned = { raw -> viewModel.applyQrToKiosk(raw, snapshot) },
+              onPickQrImageUri = { uri -> viewModel.scanQrFromImageUriForKiosk(context, uri, snapshot) },
+              onSubmit = { viewModel.submitKioskCheckIn(snapshot) },
+              onNextVisitor = { viewModel.resetKioskForNextVisitor(snapshot) },
+              onExitKiosk = { viewModel.closeVisitorKiosk() },
+            )
           }
         }
       }

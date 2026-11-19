@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -29,6 +30,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.CalendarToday
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Clear
@@ -36,8 +38,13 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.EventAvailable
 import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.PersonSearch
+import androidx.compose.material.icons.rounded.QrCode2
+import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.TabletMac
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -67,6 +74,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -86,18 +94,23 @@ import com.example.ui.components.GlassInnerSurface
 import com.example.ui.components.GlassSegmentedControl
 import com.example.ui.components.RecentVisitorsCard
 import com.example.ui.components.RecentVisitorsStripCard
+import com.example.ui.components.SelfCheckInHubSheet
 import com.example.ui.components.StaffAvatar
 import com.example.ui.components.StatusDotLabel
 import com.example.ui.components.StatusPill
 import com.example.ui.components.VisitorCardScanAction
 import com.example.ui.components.VisitorCardScanStatusStrip
+import com.example.ui.components.VisitorQrScannerDialog
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.archPointStatusColors
 import com.example.ui.viewmodel.CardScanState
 import com.example.ui.viewmodel.DeskSnapshot
+import com.example.ui.viewmodel.GoogleCalendarUiState
 import com.example.ui.viewmodel.HostBoardItem
 import com.example.ui.viewmodel.MainViewModel
 import com.example.ui.viewmodel.ReceptionFormState
+import com.example.ui.viewmodel.SelfCheckInHubState
+import com.example.ui.viewmodel.SelfCheckInSubmissionRecord
 import com.example.ui.viewmodel.VisitorSearchState
 import com.example.util.DeskFormatters
 
@@ -122,6 +135,7 @@ fun ReceptionScreen(
   hostBoard: List<HostBoardItem>,
   nowMillis: Long,
   appointments: List<Appointment> = emptyList(),
+  calendarState: GoogleCalendarUiState = GoogleCalendarUiState(),
   isBusy: Boolean = false,
   onSearchQueryChanged: (String) -> Unit,
   onTriggerSearch: () -> Unit,
@@ -158,6 +172,15 @@ fun ReceptionScreen(
   ) -> Unit = { _, _, _, _, _, _, _, _, _, _, _ -> },
   onCheckInAppointment: (Appointment) -> Unit = {},
   onUpdateAppointmentStatus: (Appointment, AppointmentStatus) -> Unit = { _, _ -> },
+  onConnectOrSyncCalendar: () -> Unit = {},
+  onSyncAppointmentToCalendar: (Appointment) -> Unit = {},
+  selfCheckInHub: SelfCheckInHubState = SelfCheckInHubState(),
+  onToggleSelfCheckInServer: () -> Unit = {},
+  onSetAutoCheckInOnSelfSubmit: (Boolean) -> Unit = {},
+  onApplySelfSubmission: (SelfCheckInSubmissionRecord) -> Unit = {},
+  onScanQrRaw: (String, Boolean) -> Unit = { _, _ -> },
+  onScanQrImageUri: (Uri, Boolean) -> Unit = { _, _ -> },
+  onOpenVisitorKiosk: () -> Unit = {},
 ) {
   val todayStart = remember(nowMillis / 60_000L) { DeskFormatters.startOfTodayMillis(nowMillis) }
   val todaysVisits =
@@ -176,6 +199,7 @@ fun ReceptionScreen(
       MainViewModel.buildRecentVisitors(
         profiles = snapshot.visitorProfiles,
         visits = snapshot.visits,
+        limit = 100,
       )
     }
   val upcomingAppointments =
@@ -186,6 +210,8 @@ fun ReceptionScreen(
 
   var showAppointmentSheet by remember { mutableStateOf(false) }
   var editingAppointment by remember { mutableStateOf<Appointment?>(null) }
+  var showQrScannerDialog by remember { mutableStateOf(false) }
+  var showSelfCheckInHub by remember { mutableStateOf(false) }
 
   if (showAppointmentSheet) {
     BookAppointmentBottomSheet(
@@ -216,6 +242,25 @@ fun ReceptionScreen(
     )
   }
 
+  if (showQrScannerDialog) {
+    VisitorQrScannerDialog(
+      onDismiss = { showQrScannerDialog = false },
+      onQrScanned = onScanQrRaw,
+      onPickQrImageUri = onScanQrImageUri,
+    )
+  }
+
+  if (showSelfCheckInHub) {
+    SelfCheckInHubSheet(
+      state = selfCheckInHub,
+      onDismiss = { showSelfCheckInHub = false },
+      onToggleServer = onToggleSelfCheckInServer,
+      onSetAutoCheckIn = onSetAutoCheckInOnSelfSubmit,
+      onLaunchKiosk = onOpenVisitorKiosk,
+      onApplySubmission = onApplySelfSubmission,
+    )
+  }
+
   BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
     val isWide = maxWidth >= 860.dp
     if (isWide) {
@@ -227,7 +272,15 @@ fun ReceptionScreen(
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.Top,
       ) {
-        Box(modifier = Modifier.weight(1.1f)) {
+        Column(
+          modifier = Modifier.weight(1.1f),
+          verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+          SelfCheckInQuickBar(
+            hubState = selfCheckInHub,
+            onOpenHub = { showSelfCheckInHub = true },
+            onOpenKiosk = onOpenVisitorKiosk,
+          )
           VisitorEntryCard(
             snapshot = snapshot,
             form = form,
@@ -239,6 +292,7 @@ fun ReceptionScreen(
             onClearSearch = onClearSearch,
             onScanCardUri = onScanCardUri,
             onClearCardScan = onClearCardScan,
+            onOpenQrScanner = { showQrScannerDialog = true },
             onMobileChanged = onMobileChanged,
             onNameChanged = onNameChanged,
             onCompanyChanged = onCompanyChanged,
@@ -266,6 +320,9 @@ fun ReceptionScreen(
             appointments = upcomingAppointments,
             nowMillis = nowMillis,
             isBusy = isBusy,
+            calendarState = calendarState,
+            onConnectOrSyncCalendar = onConnectOrSyncCalendar,
+            onSyncAppointmentToCalendar = onSyncAppointmentToCalendar,
             onBookNew = {
               editingAppointment = null
               showAppointmentSheet = true
@@ -368,6 +425,11 @@ fun ReceptionScreen(
             form = form,
             onSelectVisitor = onApplySuggestion,
           )
+          SelfCheckInQuickBar(
+            hubState = selfCheckInHub,
+            onOpenHub = { showSelfCheckInHub = true },
+            onOpenKiosk = onOpenVisitorKiosk,
+          )
           VisitorEntryCard(
             snapshot = snapshot,
             form = form,
@@ -379,6 +441,7 @@ fun ReceptionScreen(
             onClearSearch = onClearSearch,
             onScanCardUri = onScanCardUri,
             onClearCardScan = onClearCardScan,
+            onOpenQrScanner = { showQrScannerDialog = true },
             onMobileChanged = onMobileChanged,
             onNameChanged = onNameChanged,
             onCompanyChanged = onCompanyChanged,
@@ -418,6 +481,9 @@ fun ReceptionScreen(
             appointments = upcomingAppointments,
             nowMillis = nowMillis,
             isBusy = isBusy,
+            calendarState = calendarState,
+            onConnectOrSyncCalendar = onConnectOrSyncCalendar,
+            onSyncAppointmentToCalendar = onSyncAppointmentToCalendar,
             onBookNew = {
               editingAppointment = null
               showAppointmentSheet = true
@@ -495,6 +561,89 @@ private fun FreeHostsQuickStrip(
   }
 }
 
+@Composable
+private fun SelfCheckInQuickBar(
+  hubState: SelfCheckInHubState,
+  onOpenHub: () -> Unit,
+  onOpenKiosk: () -> Unit,
+) {
+  val status = archPointStatusColors()
+  GlassInnerSurface(
+    modifier =
+      Modifier.fillMaxWidth()
+        .clip(RoundedCornerShape(14.dp))
+        .clickable(onClick = onOpenHub)
+        .testTag("open_self_checkin_hub_button"),
+    borderColor =
+      if (hubState.isServerRunning) status.freeText.copy(alpha = 0.5f)
+      else MaterialTheme.colorScheme.outlineVariant,
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.weight(1f),
+      ) {
+        Icon(
+          imageVector = Icons.Rounded.QrCode2,
+          contentDescription = "Self Check-In QR Form",
+          tint = if (hubState.isServerRunning) status.freeText else MaterialTheme.colorScheme.primary,
+          modifier = Modifier.size(20.dp),
+        )
+        Column(modifier = Modifier.weight(1f)) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+            Text(
+              text =
+                if (hubState.isServerRunning) "Self Check-In QR Live"
+                else "Visitor Self Check-In QR",
+              style = MaterialTheme.typography.labelLarge,
+              fontWeight = FontWeight.SemiBold,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+            if (hubState.isServerRunning) {
+              Box(modifier = Modifier.size(7.dp).clip(CircleShape).background(status.freeText))
+            }
+          }
+          val subtitle =
+            when {
+              hubState.recentSubmissions.isNotEmpty() ->
+                "${hubState.recentSubmissions.size} fetched · Tap to open QR / inbox"
+              hubState.isServerRunning -> hubState.serverUrl
+              else -> "Let visitors scan & submit from phone or kiosk"
+            }
+          Text(
+            text = subtitle,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+      }
+
+      Spacer(Modifier.width(6.dp))
+      OutlinedButton(
+        onClick = onOpenKiosk,
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+        modifier = Modifier.heightIn(min = 40.dp).testTag("quick_launch_kiosk_button"),
+      ) {
+        Icon(Icons.Rounded.TabletMac, contentDescription = null, modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(4.dp))
+        Text("Kiosk", style = MaterialTheme.typography.labelMedium)
+      }
+    }
+  }
+}
+
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun VisitorEntryCard(
@@ -508,6 +657,7 @@ private fun VisitorEntryCard(
   onClearSearch: () -> Unit,
   onScanCardUri: (Uri) -> Unit,
   onClearCardScan: () -> Unit,
+  onOpenQrScanner: () -> Unit,
   onMobileChanged: (String) -> Unit,
   onNameChanged: (String) -> Unit,
   onCompanyChanged: (String) -> Unit,
@@ -567,7 +717,7 @@ private fun VisitorEntryCard(
   }
 
   GlassCard(contentPadding = PaddingValues(14.dp)) {
-    // 1. PARALLEL ROW: Search returning visitor + Compact Scan Card action
+    // 1. PARALLEL ROW: Search returning visitor + Compact Scan Card + QR Scanner
     Row(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -607,6 +757,26 @@ private fun VisitorEntryCard(
         scanState = cardScanState,
         onScanCardUri = onScanCardUri,
       )
+
+      Surface(
+        modifier =
+          Modifier.size(54.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onOpenQrScanner)
+            .testTag("scan_qr_button"),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f)),
+      ) {
+        Box(contentAlignment = Alignment.Center) {
+          Icon(
+            imageVector = Icons.Rounded.QrCodeScanner,
+            contentDescription = "Scan Visitor QR",
+            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.size(22.dp),
+          )
+        }
+      }
     }
 
     // Expandable card-scan status / preview (zero height when Idle)
@@ -1461,11 +1631,26 @@ private fun UpcomingAppointmentsCard(
   appointments: List<Appointment>,
   nowMillis: Long,
   isBusy: Boolean,
+  calendarState: GoogleCalendarUiState,
+  onConnectOrSyncCalendar: () -> Unit,
+  onSyncAppointmentToCalendar: (Appointment) -> Unit,
   onBookNew: () -> Unit,
   onCheckInAppointment: (Appointment) -> Unit,
   onEditAppointment: (Appointment) -> Unit,
   onCancelAppointment: (Appointment) -> Unit,
 ) {
+  val context = LocalContext.current
+  val status = archPointStatusColors()
+  val openCalendarUrl: (String) -> Unit = { url ->
+    val cleanUrl = url.trim()
+    if (cleanUrl.startsWith("https://") || cleanUrl.startsWith("http://")) {
+      try {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(cleanUrl)))
+      } catch (_: Exception) {
+      }
+    }
+  }
+
   GlassCard(contentPadding = PaddingValues(16.dp)) {
     Row(
       modifier = Modifier.fillMaxWidth(),
@@ -1479,21 +1664,44 @@ private fun UpcomingAppointmentsCard(
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-          text = "Pre-booked guests ready for 1-tap check-in",
+          text =
+            if (calendarState.isConnected) "Calendar connected · Auto-invites host"
+            else "Pre-booked guests ready for 1-tap check-in",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
       }
-      Spacer(Modifier.width(8.dp))
-      OutlinedButton(
-        onClick = onBookNew,
-        shape = RoundedCornerShape(10.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-        modifier = Modifier.height(38.dp).testTag("reception_upcoming_book_button"),
-      ) {
-        Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-        Spacer(Modifier.width(4.dp))
-        Text("Book")
+      Spacer(Modifier.width(6.dp))
+      Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        OutlinedButton(
+          onClick = onConnectOrSyncCalendar,
+          enabled = !calendarState.isConnecting && !calendarState.isSyncing,
+          shape = RoundedCornerShape(10.dp),
+          contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+          modifier = Modifier.height(48.dp).testTag("reception_calendar_connect_button"),
+        ) {
+          if (calendarState.isConnecting || calendarState.isSyncing) {
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+          } else {
+            Icon(
+              imageVector = if (calendarState.isConnected) Icons.Rounded.Sync else Icons.Rounded.CalendarMonth,
+              contentDescription = "Sync Google Calendar",
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(if (calendarState.isConnected) "Synced" else "GCal")
+          }
+        }
+        OutlinedButton(
+          onClick = onBookNew,
+          shape = RoundedCornerShape(10.dp),
+          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+          modifier = Modifier.height(48.dp).testTag("reception_upcoming_book_button"),
+        ) {
+          Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+          Spacer(Modifier.width(4.dp))
+          Text("Book")
+        }
       }
     }
 
@@ -1508,6 +1716,7 @@ private fun UpcomingAppointmentsCard(
         appointments.forEach { appt ->
           val dayLabel = DeskFormatters.formatAppointmentDayLabel(appt.scheduledDateIso, nowMillis)
           val isToday = dayLabel == "Today"
+          val hasCalendarEvent = appt.calendarEventId.isNotBlank()
           GlassInnerSurface(
             modifier = Modifier.fillMaxWidth().testTag("reception_appt_row_${appt.id}"),
             borderColor =
@@ -1566,6 +1775,31 @@ private fun UpcomingAppointmentsCard(
                 )
               }
 
+              if (hasCalendarEvent) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                  StatusPill(
+                    text = "On Google Calendar",
+                    containerColor = status.freeContainer,
+                    contentColor = status.freeOnContainer,
+                  )
+                  if (appt.calendarHtmlLink.isNotBlank()) {
+                    TextButton(
+                      onClick = { openCalendarUrl(appt.calendarHtmlLink) },
+                      contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                      modifier = Modifier.height(48.dp).testTag("reception_appt_open_gcal_${appt.id}"),
+                    ) {
+                      Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                      Spacer(Modifier.width(4.dp))
+                      Text("Open", style = MaterialTheme.typography.labelSmall)
+                    }
+                  }
+                }
+              }
+
               if (appt.location.isNotBlank() || appt.notes.isNotBlank()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                   if (appt.location.isNotBlank()) {
@@ -1591,40 +1825,60 @@ private fun UpcomingAppointmentsCard(
                 }
               }
 
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-              ) {
-                Button(
-                  onClick = { onCheckInAppointment(appt) },
-                  enabled = !isBusy,
-                  shape = RoundedCornerShape(10.dp),
-                  contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                  modifier = Modifier.weight(1.2f).height(40.dp).testTag("reception_appt_checkin_${appt.id}"),
+              Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                  Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
-                  Spacer(Modifier.width(4.dp))
-                  Text("Check in", maxLines = 1)
+                  Button(
+                    onClick = { onCheckInAppointment(appt) },
+                    enabled = !isBusy,
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.weight(1.2f).height(48.dp).testTag("reception_appt_checkin_${appt.id}"),
+                  ) {
+                    Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Check in", maxLines = 1)
+                  }
+                  if (!hasCalendarEvent) {
+                    OutlinedButton(
+                      onClick = { onSyncAppointmentToCalendar(appt) },
+                      enabled = !isBusy && !calendarState.isSyncing && !calendarState.isConnecting,
+                      shape = RoundedCornerShape(10.dp),
+                      contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                      modifier = Modifier.weight(0.95f).height(48.dp).testTag("reception_appt_sync_gcal_${appt.id}"),
+                    ) {
+                      Icon(Icons.Rounded.CalendarMonth, contentDescription = null, modifier = Modifier.size(15.dp))
+                      Spacer(Modifier.width(4.dp))
+                      Text("GCal", maxLines = 1)
+                    }
+                  }
                 }
-                OutlinedButton(
-                  onClick = { onEditAppointment(appt) },
-                  enabled = !isBusy,
-                  shape = RoundedCornerShape(10.dp),
-                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                  modifier = Modifier.weight(0.75f).height(40.dp).testTag("reception_appt_edit_${appt.id}"),
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                  Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
-                  Spacer(Modifier.width(4.dp))
-                  Text("Edit", maxLines = 1)
-                }
-                OutlinedButton(
-                  onClick = { onCancelAppointment(appt) },
-                  enabled = !isBusy,
-                  shape = RoundedCornerShape(10.dp),
-                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                  modifier = Modifier.weight(0.8f).height(40.dp).testTag("reception_appt_cancel_${appt.id}"),
-                ) {
-                  Text("Cancel", maxLines = 1)
+                  OutlinedButton(
+                    onClick = { onEditAppointment(appt) },
+                    enabled = !isBusy,
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.weight(1f).height(48.dp).testTag("reception_appt_edit_${appt.id}"),
+                  ) {
+                    Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Edit", maxLines = 1)
+                  }
+                  OutlinedButton(
+                    onClick = { onCancelAppointment(appt) },
+                    enabled = !isBusy,
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.weight(1f).height(48.dp).testTag("reception_appt_cancel_${appt.id}"),
+                  ) {
+                    Text("Cancel", maxLines = 1)
+                  }
                 }
               }
             }
