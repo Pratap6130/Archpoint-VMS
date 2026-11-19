@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,10 +28,13 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CalendarToday
-import androidx.compose.material.icons.rounded.Chair
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Clear
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.EventAvailable
+import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.PersonSearch
 import androidx.compose.material.icons.rounded.Search
@@ -38,13 +43,16 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -66,20 +74,23 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import android.net.Uri
-import com.example.data.model.HostAvailability
+import com.example.data.model.Appointment
+import com.example.data.model.AppointmentStatus
+import com.example.data.model.StaffMember
 import com.example.data.model.Visit
 import com.example.data.model.VisitStatus
 import com.example.data.model.VisitorProfile
-import com.example.ui.components.FreeDotLabel
+import com.example.ui.components.BookAppointmentBottomSheet
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassInnerSurface
 import com.example.ui.components.GlassSegmentedControl
 import com.example.ui.components.RecentVisitorsCard
 import com.example.ui.components.RecentVisitorsStripCard
 import com.example.ui.components.StaffAvatar
+import com.example.ui.components.StatusDotLabel
 import com.example.ui.components.StatusPill
-import com.example.ui.components.VisitorCardScanBanner
+import com.example.ui.components.VisitorCardScanAction
+import com.example.ui.components.VisitorCardScanStatusStrip
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.archPointStatusColors
 import com.example.ui.viewmodel.CardScanState
@@ -93,6 +104,7 @@ import com.example.util.DeskFormatters
 private enum class ReceptionPane {
   CHECK_IN,
   DESK_QUEUE,
+  APPOINTMENTS,
 }
 
 private enum class TodaySubTab {
@@ -109,6 +121,8 @@ fun ReceptionScreen(
   cardScanState: CardScanState,
   hostBoard: List<HostBoardItem>,
   nowMillis: Long,
+  appointments: List<Appointment> = emptyList(),
+  isBusy: Boolean = false,
   onSearchQueryChanged: (String) -> Unit,
   onTriggerSearch: () -> Unit,
   onClearSearch: () -> Unit,
@@ -129,6 +143,21 @@ fun ReceptionScreen(
   onRemind: (Visit) -> Unit,
   onSendIn: (Visit) -> Unit,
   onMarkDone: (Visit) -> Unit,
+  onSaveAppointment: (
+    existing: Appointment?,
+    visitorName: String,
+    visitorMobile: String,
+    visitorCompany: String,
+    visitorEmail: String,
+    purpose: String,
+    location: String,
+    scheduledDateIso: String,
+    scheduledTimeLabel: String,
+    notes: String,
+    assignedHostStaff: StaffMember?,
+  ) -> Unit = { _, _, _, _, _, _, _, _, _, _, _ -> },
+  onCheckInAppointment: (Appointment) -> Unit = {},
+  onUpdateAppointmentStatus: (Appointment, AppointmentStatus) -> Unit = { _, _ -> },
 ) {
   val todayStart = remember(nowMillis / 60_000L) { DeskFormatters.startOfTodayMillis(nowMillis) }
   val todaysVisits =
@@ -149,6 +178,43 @@ fun ReceptionScreen(
         visits = snapshot.visits,
       )
     }
+  val upcomingAppointments =
+    remember(appointments, nowMillis / 60_000L) {
+      MainViewModel.upcomingScheduledAppointments(appointments, nowMillis)
+    }
+  val assignableHosts = remember(hostBoard) { hostBoard.map { it.staff } }
+
+  var showAppointmentSheet by remember { mutableStateOf(false) }
+  var editingAppointment by remember { mutableStateOf<Appointment?>(null) }
+
+  if (showAppointmentSheet) {
+    BookAppointmentBottomSheet(
+      existing = editingAppointment,
+      assignableHosts = assignableHosts,
+      isHostOnly = false,
+      currentStaff = snapshot.currentStaff,
+      isBusy = isBusy,
+      onDismiss = {
+        showAppointmentSheet = false
+        editingAppointment = null
+      },
+      onSave = { vName, vMob, vComp, vEmail, purpose, loc, dateIso, timeLbl, notes, host ->
+        onSaveAppointment(
+          editingAppointment,
+          vName,
+          vMob,
+          vComp,
+          vEmail,
+          purpose,
+          loc,
+          dateIso,
+          timeLbl,
+          notes,
+          host,
+        )
+      },
+    )
+  }
 
   BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
     val isWide = maxWidth >= 860.dp
@@ -185,6 +251,10 @@ fun ReceptionScreen(
             onClearReturningMatch = onClearReturningMatch,
             onClearForm = onClearForm,
             onCheckIn = onCheckIn,
+            onBookAppointment = {
+              editingAppointment = null
+              showAppointmentSheet = true
+            },
           )
         }
         Column(
@@ -192,6 +262,23 @@ fun ReceptionScreen(
           verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
           WhoIsFreeBoardCard(hostBoard = hostBoard, onMarkDone = onMarkDone)
+          UpcomingAppointmentsCard(
+            appointments = upcomingAppointments,
+            nowMillis = nowMillis,
+            isBusy = isBusy,
+            onBookNew = {
+              editingAppointment = null
+              showAppointmentSheet = true
+            },
+            onCheckInAppointment = onCheckInAppointment,
+            onEditAppointment = { appt ->
+              editingAppointment = appt
+              showAppointmentSheet = true
+            },
+            onCancelAppointment = { appt ->
+              onUpdateAppointmentStatus(appt, AppointmentStatus.CANCELLED)
+            },
+          )
           RecentVisitorsCard(
             visitors = recentVisitors,
             form = form,
@@ -212,15 +299,17 @@ fun ReceptionScreen(
         modifier =
           Modifier.fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
       ) {
         GlassSegmentedControl(
           options =
             listOf(
-              ReceptionPane.CHECK_IN to "New check-in",
+              ReceptionPane.CHECK_IN to "Check-in",
               ReceptionPane.DESK_QUEUE to
-                if (activeQueueCount > 0) "Desk queue ($activeQueueCount)" else "Who's free & queue",
+                if (activeQueueCount > 0) "Queue ($activeQueueCount)" else "Queue",
+              ReceptionPane.APPOINTMENTS to
+                if (upcomingAppointments.isNotEmpty()) "Appts (${upcomingAppointments.size})" else "Appts",
             ),
           selected = activePane,
           onSelect = { activePane = it },
@@ -228,7 +317,52 @@ fun ReceptionScreen(
         )
 
         if (activePane == ReceptionPane.CHECK_IN) {
-          FreeHostsQuickStrip(hostBoard = hostBoard, onSelectHost = onHostSelected)
+          FreeHostsQuickStrip(
+            hostBoard = hostBoard,
+            selectedHostId = form.selectedHostId,
+            onSelectHost = onHostSelected,
+          )
+          if (upcomingAppointments.isNotEmpty()) {
+            val nextAppt = upcomingAppointments.first()
+            val dayLbl = DeskFormatters.formatAppointmentDayLabel(nextAppt.scheduledDateIso, nowMillis)
+            GlassInnerSurface(
+              modifier =
+                Modifier.fillMaxWidth()
+                  .clip(RoundedCornerShape(14.dp))
+                  .clickable { activePane = ReceptionPane.APPOINTMENTS }
+                  .testTag("reception_upcoming_banner"),
+              borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+            ) {
+              Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+              ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                  Icon(
+                    Icons.Rounded.EventAvailable,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp),
+                  )
+                  Spacer(Modifier.width(8.dp))
+                  Text(
+                    text = "${upcomingAppointments.size} upcoming · Next: ${nextAppt.visitorName} for ${nextAppt.hostShownAs} ($dayLbl ${nextAppt.scheduledTimeLabel})",
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                  text = "View",
+                  style = MaterialTheme.typography.labelMedium,
+                  color = MaterialTheme.colorScheme.primary,
+                  fontWeight = FontWeight.Bold,
+                )
+              }
+            }
+          }
           RecentVisitorsStripCard(
             visitors = recentVisitors,
             form = form,
@@ -257,8 +391,12 @@ fun ReceptionScreen(
             onClearReturningMatch = onClearReturningMatch,
             onClearForm = onClearForm,
             onCheckIn = onCheckIn,
+            onBookAppointment = {
+              editingAppointment = null
+              showAppointmentSheet = true
+            },
           )
-        } else {
+        } else if (activePane == ReceptionPane.DESK_QUEUE) {
           WhoIsFreeBoardCard(hostBoard = hostBoard, onMarkDone = onMarkDone)
           TodayAtOfficeCard(
             visits = todaysVisits,
@@ -275,8 +413,26 @@ fun ReceptionScreen(
               activePane = ReceptionPane.CHECK_IN
             },
           )
+        } else {
+          UpcomingAppointmentsCard(
+            appointments = upcomingAppointments,
+            nowMillis = nowMillis,
+            isBusy = isBusy,
+            onBookNew = {
+              editingAppointment = null
+              showAppointmentSheet = true
+            },
+            onCheckInAppointment = onCheckInAppointment,
+            onEditAppointment = { appt ->
+              editingAppointment = appt
+              showAppointmentSheet = true
+            },
+            onCancelAppointment = { appt ->
+              onUpdateAppointmentStatus(appt, AppointmentStatus.CANCELLED)
+            },
+          )
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(10.dp))
       }
     }
   }
@@ -285,6 +441,7 @@ fun ReceptionScreen(
 @Composable
 private fun FreeHostsQuickStrip(
   hostBoard: List<HostBoardItem>,
+  selectedHostId: String,
   onSelectHost: (String) -> Unit,
 ) {
   if (hostBoard.isEmpty()) return
@@ -294,30 +451,43 @@ private fun FreeHostsQuickStrip(
     horizontalArrangement = Arrangement.spacedBy(8.dp),
   ) {
     hostBoard.forEach { item ->
-      val isFree = item.inMeetingVisit == null
-      val dotColor = if (isFree) status.freeText else status.meetingText
+      val (statusWord, tone) = MainViewModel.resolveHostAvailabilityVisual(item)
+      val dotColor = status.dotColor(tone)
+      val selected = item.staff.id == selectedHostId
       GlassInnerSurface(
         modifier =
           Modifier.clip(RoundedCornerShape(20.dp))
-            .clickable { onSelectHost(item.staff.id) },
+            .clickable { onSelectHost(item.staff.id) }
+            .testTag("host_tile_${item.staff.id}"),
         shape = RoundedCornerShape(20.dp),
+        containerColor =
+          if (selected) MaterialTheme.colorScheme.primaryContainer
+          else null,
+        borderColor =
+          if (selected) MaterialTheme.colorScheme.primary
+          else dotColor.copy(alpha = 0.4f),
       ) {
         Row(
-          modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+          modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          Box(modifier = Modifier.size(7.dp).clip(CircleShape).background(dotColor))
+          Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(dotColor))
           Spacer(Modifier.width(6.dp))
           Text(
             text =
               buildString {
                 append(item.staff.shownAs.ifBlank { item.staff.fullName })
-                if (item.staff.cabin.isNotBlank()) {
-                  append(" · ${item.staff.cabin}")
+                if (item.inMeetingVisit != null) {
+                  append(" · ${item.meetingMinutes}m")
+                } else {
+                  append(" · $statusWord")
                 }
               },
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color =
+              if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+              else MaterialTheme.colorScheme.onSurface,
           )
         }
       }
@@ -350,10 +520,13 @@ private fun VisitorEntryCard(
   onClearReturningMatch: () -> Unit,
   onClearForm: () -> Unit,
   onCheckIn: () -> Unit,
+  onBookAppointment: () -> Unit,
 ) {
   val status = archPointStatusColors()
   var showDobPicker by remember { mutableStateOf(false) }
-  var hostFilterQuery by remember { mutableStateOf("") }
+  var hostDropdownExpanded by remember { mutableStateOf(false) }
+  var reasonDropdownExpanded by remember { mutableStateOf(false) }
+
   val shownReasons = remember(snapshot.reasons) { snapshot.reasons.filter { it.shown } }
   val nameSuggestions =
     remember(form.name, snapshot.visitorProfiles, form.matchedProfile) {
@@ -366,23 +539,8 @@ private fun VisitorEntryCard(
         emptyList()
       }
     }
-  val filteredHosts =
-    remember(hostBoard, hostFilterQuery) {
-      val q = hostFilterQuery.trim().lowercase()
-      if (q.isEmpty()) {
-        hostBoard
-      } else {
-        hostBoard.filter {
-          it.staff.shownAs.lowercase().contains(q) ||
-            it.staff.fullName.lowercase().contains(q) ||
-            it.staff.cabin.lowercase().contains(q) ||
-            it.staff.floor.lowercase().contains(q) ||
-            it.staff.designation.lowercase().contains(q) ||
-            it.staff.department.lowercase().contains(q)
-        }
-      }
-    }
-  val selectedHost = hostBoard.firstOrNull { it.staff.id == form.selectedHostId }?.staff
+  val selectedHostItem = hostBoard.firstOrNull { it.staff.id == form.selectedHostId }
+  val selectedHost = selectedHostItem?.staff
 
   if (showDobPicker) {
     val datePickerState = rememberDatePickerState()
@@ -408,41 +566,53 @@ private fun VisitorEntryCard(
     }
   }
 
-  GlassCard {
-    // 1. VISITOR CARD IMAGE SCAN & RETURNING VISITOR SEARCH
-    VisitorCardScanBanner(
-      scanState = cardScanState,
-      onScanCardUri = onScanCardUri,
-      onClearScan = onClearCardScan,
-    )
-
-    OutlinedTextField(
-      value = searchState.query,
-      onValueChange = onSearchQueryChanged,
-      label = { Text("Search returning visitor") },
-      placeholder = { Text("Name, phone, or email to auto-fill...") },
-      leadingIcon = {
-        Icon(
-          imageVector = Icons.Rounded.Search,
-          contentDescription = "Search returning visitors",
-        )
-      },
-      trailingIcon = {
-        if (searchState.isSearching) {
-          CircularProgressIndicator(
+  GlassCard(contentPadding = PaddingValues(14.dp)) {
+    // 1. PARALLEL ROW: Search returning visitor + Compact Scan Card action
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      OutlinedTextField(
+        value = searchState.query,
+        onValueChange = onSearchQueryChanged,
+        label = { Text("Search visitor") },
+        placeholder = { Text("Name / phone...") },
+        leadingIcon = {
+          Icon(
+            imageVector = Icons.Rounded.Search,
+            contentDescription = "Search returning visitors",
             modifier = Modifier.size(18.dp),
-            strokeWidth = 2.dp,
           )
-        } else if (searchState.query.isNotEmpty()) {
-          IconButton(onClick = onClearSearch) {
-            Icon(Icons.Rounded.Clear, contentDescription = "Clear search")
+        },
+        trailingIcon = {
+          if (searchState.isSearching) {
+            CircularProgressIndicator(
+              modifier = Modifier.size(16.dp),
+              strokeWidth = 2.dp,
+            )
+          } else if (searchState.query.isNotEmpty()) {
+            IconButton(onClick = onClearSearch) {
+              Icon(Icons.Rounded.Clear, contentDescription = "Clear search", modifier = Modifier.size(18.dp))
+            }
           }
-        }
-      },
-      keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-      keyboardActions = KeyboardActions(onSearch = { onTriggerSearch() }),
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth().testTag("returning_visitor_search_input"),
+        },
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { onTriggerSearch() }),
+        singleLine = true,
+        modifier = Modifier.weight(1f).testTag("returning_visitor_search_input"),
+      )
+
+      VisitorCardScanAction(
+        scanState = cardScanState,
+        onScanCardUri = onScanCardUri,
+      )
+    }
+
+    // Expandable card-scan status / preview (zero height when Idle)
+    VisitorCardScanStatusStrip(
+      scanState = cardScanState,
+      onClearScan = onClearCardScan,
     )
 
     if (searchState.errorMessage != null) {
@@ -494,7 +664,6 @@ private fun VisitorEntryCard(
                     val details =
                       listOfNotNull(
                         profile.company.takeIf { it.isNotBlank() },
-                        profile.visitorJobProfile.takeIf { it.isNotBlank() },
                         profile.mobile.takeIf { it.isNotBlank() && it != "919999999999" },
                         profile.email.takeIf { it.isNotBlank() },
                       ).joinToString(" · ")
@@ -525,12 +694,12 @@ private fun VisitorEntryCard(
     form.matchedProfile?.let { match ->
       val nextVisitLabel = DeskFormatters.ordinalVisit(match.visitCount + 1L)
       GlassInnerSurface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(10.dp),
         containerColor = status.freeContainer,
         borderColor = status.freeText.copy(alpha = 0.4f),
       ) {
         Row(
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.SpaceBetween,
         ) {
@@ -539,229 +708,306 @@ private fun VisitorEntryCard(
               Icons.Rounded.CheckCircle,
               contentDescription = null,
               tint = status.freeText,
-              modifier = Modifier.size(18.dp),
+              modifier = Modifier.size(16.dp),
             )
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(6.dp))
             Text(
               text = "Returning · $nextVisitLabel visit",
-              style = MaterialTheme.typography.bodySmall,
+              style = MaterialTheme.typography.labelMedium,
               color = status.freeOnContainer,
               fontWeight = FontWeight.SemiBold,
             )
           }
           TextButton(
             onClick = onClearReturningMatch,
-            modifier = Modifier.testTag("not_them_button"),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+            modifier = Modifier.heightIn(min = 32.dp).testTag("not_them_button"),
           ) {
-            Text("Not them?", color = status.freeText, fontWeight = FontWeight.Bold)
+            Text("Not them?", style = MaterialTheme.typography.labelSmall, color = status.freeText, fontWeight = FontWeight.Bold)
           }
         }
       }
     }
 
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-    // 2. EXACT ORDER: Name -> Org -> Reason to meet -> DOB -> Phone -> Email -> Person to meet
-    OutlinedTextField(
-      value = form.name,
-      onValueChange = onNameChanged,
-      label = { Text("Name") },
-      placeholder = { Text("Visitor full name") },
-      keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth().testTag("visitor_name_input"),
-    )
+    // 2. COMPACT ZERO-SCROLL 2-COLUMN ROWS
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      OutlinedTextField(
+        value = form.name,
+        onValueChange = onNameChanged,
+        label = { Text("Name") },
+        placeholder = { Text("Full name") },
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+        singleLine = true,
+        modifier = Modifier.weight(1f).testTag("visitor_name_input"),
+      )
+      OutlinedTextField(
+        value = form.company,
+        onValueChange = onCompanyChanged,
+        label = { Text("Org / Company") },
+        placeholder = { Text("Optional") },
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+        singleLine = true,
+        modifier = Modifier.weight(1f).testTag("visitor_company_input"),
+      )
+    }
 
     if (nameSuggestions.isNotEmpty()) {
-      Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(
-            Icons.Rounded.PersonSearch,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.secondary,
-          )
-          Spacer(Modifier.width(6.dp))
-          Text(
-            "Matching \"${form.name.trim()}\"",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-        }
-        FlowRow(
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-          verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-          nameSuggestions.forEach { profile ->
-            FilterChip(
-              selected = false,
-              onClick = { onApplySuggestion(profile) },
-              label = {
-                val comp = profile.company.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""
-                Text("${profile.name}$comp")
-              },
-            )
-          }
-        }
-      }
-    }
-
-    OutlinedTextField(
-      value = form.company,
-      onValueChange = onCompanyChanged,
-      label = { Text("Org") },
-      placeholder = { Text("Company or organization (optional)") },
-      keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth().testTag("visitor_company_input"),
-    )
-
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      Text("Reason to meet", style = MaterialTheme.typography.labelLarge)
       FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
       ) {
-        shownReasons.forEach { reason ->
-          val selected = form.selectedReason == reason.label
+        nameSuggestions.forEach { profile ->
           FilterChip(
-            selected = selected,
-            onClick = { onReasonSelected(reason.label) },
-            label = { Text(reason.label) },
-            colors =
-              FilterChipDefaults.filterChipColors(
-                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-              ),
-            modifier = Modifier.testTag("reason_chip_${reason.label}"),
+            selected = false,
+            onClick = { onApplySuggestion(profile) },
+            leadingIcon = {
+              Icon(Icons.Rounded.PersonSearch, contentDescription = null, modifier = Modifier.size(15.dp))
+            },
+            label = {
+              val comp = profile.company.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""
+              Text("${profile.name}$comp", style = MaterialTheme.typography.labelSmall)
+            },
           )
         }
       }
     }
 
-    OutlinedTextField(
-      value = form.dob,
-      onValueChange = onDobChanged,
-      label = { Text("DOB (optional)") },
-      placeholder = { Text("mm/dd/yyyy") },
-      singleLine = true,
-      trailingIcon = {
-        Row {
-          if (form.dob.isNotEmpty()) {
-            IconButton(onClick = { onDobChanged("") }) {
-              Icon(Icons.Rounded.Clear, contentDescription = "Clear date of birth")
-            }
-          }
-          IconButton(onClick = { showDobPicker = true }) {
-            Icon(Icons.Rounded.CalendarToday, contentDescription = "Pick date of birth")
-          }
-        }
-      },
-      modifier = Modifier.fillMaxWidth().testTag("visitor_dob_input"),
-    )
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      OutlinedTextField(
+        value = form.mobile,
+        onValueChange = onMobileChanged,
+        label = { Text("Phone (10 digits)") },
+        placeholder = { Text("9829012345") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = JetBrainsMonoFamily),
+        modifier = Modifier.weight(1f).testTag("visitor_mobile_input"),
+      )
+      OutlinedTextField(
+        value = form.email,
+        onValueChange = onEmailChanged,
+        label = { Text("Email (opt.)") },
+        placeholder = { Text("name@co.com") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+        singleLine = true,
+        modifier = Modifier.weight(1f).testTag("visitor_email_input"),
+      )
+    }
 
-    OutlinedTextField(
-      value = form.mobile,
-      onValueChange = onMobileChanged,
-      label = { Text("Phone (10 digits)") },
-      placeholder = { Text("9829012345") },
-      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-      singleLine = true,
-      textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = JetBrainsMonoFamily),
-      modifier = Modifier.fillMaxWidth().testTag("visitor_mobile_input"),
-    )
+    // 3. HOST DROPDOWN & REASON DROPDOWN SIDE BY SIDE
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      ExposedDropdownMenuBox(
+        expanded = hostDropdownExpanded,
+        onExpandedChange = { if (hostBoard.isNotEmpty()) hostDropdownExpanded = !hostDropdownExpanded },
+        modifier = Modifier.weight(1.15f),
+      ) {
+        val selectedLabel =
+          selectedHost?.let { it.shownAs.ifBlank { it.fullName } } ?: "Select host"
+        val selectedTone =
+          selectedHostItem?.let { MainViewModel.resolveHostAvailabilityVisual(it).second }
 
-    OutlinedTextField(
-      value = form.email,
-      onValueChange = onEmailChanged,
-      label = { Text("Email (optional)") },
-      placeholder = { Text("visitor@company.com") },
-      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth().testTag("visitor_email_input"),
-    )
-
-    OutlinedTextField(
-      value = form.remark,
-      onValueChange = onRemarkChanged,
-      label = { Text("Remark / note (optional)") },
-      placeholder = { Text("e.g. Gift, 3rd floor, scheduled for 4 PM") },
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth().testTag("visitor_remark_input"),
-    )
-
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      Text("Person to meet", style = MaterialTheme.typography.labelLarge)
-      if (hostBoard.size > 4) {
         OutlinedTextField(
-          value = hostFilterQuery,
-          onValueChange = { hostFilterQuery = it },
-          placeholder = { Text("Filter host, floor, or cabin...") },
-          leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
-          singleLine = true,
-          modifier = Modifier.fillMaxWidth().testTag("host_filter_input"),
-        )
-      }
-      if (filteredHosts.isEmpty()) {
-        Text(
-          if (hostBoard.isEmpty()) {
-            "No hosts listed yet. Enable \"Visitors can ask for them\" in Admin."
-          } else {
-            "No matching hosts."
-          },
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-      } else {
-        val rows = filteredHosts.chunked(2)
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-          rows.forEach { pair ->
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-              pair.forEach { item ->
-                HostSelectTile(
-                  item = item,
-                  selected = item.staff.id == form.selectedHostId,
-                  onClick = { onHostSelected(item.staff.id) },
-                  modifier = Modifier.weight(1f),
+          value = selectedLabel,
+          onValueChange = {},
+          readOnly = true,
+          label = { Text("Person to meet") },
+          leadingIcon =
+            selectedTone?.let { tone ->
+              {
+                Box(
+                  modifier =
+                    Modifier.size(10.dp)
+                      .clip(CircleShape)
+                      .background(status.dotColor(tone))
                 )
               }
-              if (pair.size == 1) {
-                Spacer(Modifier.weight(1f))
-              }
+            },
+          trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = hostDropdownExpanded) },
+          singleLine = true,
+          colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+          modifier =
+            Modifier
+              .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+              .fillMaxWidth()
+              .testTag("host_dropdown_field"),
+        )
+
+        ExposedDropdownMenu(
+          expanded = hostDropdownExpanded,
+          onDismissRequest = { hostDropdownExpanded = false },
+        ) {
+          if (hostBoard.isEmpty()) {
+            DropdownMenuItem(
+              text = { Text("No hosts enabled in Admin") },
+              onClick = { hostDropdownExpanded = false },
+            )
+          } else {
+            hostBoard.forEach { item ->
+              val (availLabel, availTone) = MainViewModel.resolveHostAvailabilityVisual(item)
+              val hostName = item.staff.shownAs.ifBlank { item.staff.fullName }
+              val sub =
+                listOfNotNull(
+                  item.staff.designation.takeIf { it.isNotBlank() },
+                  item.staff.formattedSeating().ifBlank { item.staff.cabin }.takeIf { it.isNotBlank() },
+                ).joinToString(" · ")
+              DropdownMenuItem(
+                leadingIcon = {
+                  StaffAvatar(
+                    name = hostName,
+                    photoUrl = item.staff.photoUrl,
+                    size = 30.dp,
+                    textStyle = MaterialTheme.typography.labelSmall,
+                  )
+                },
+                text = {
+                  Column {
+                    Text(
+                      text = hostName,
+                      style = MaterialTheme.typography.bodyMedium,
+                      fontWeight = FontWeight.SemiBold,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                    )
+                    if (sub.isNotBlank()) {
+                      Text(
+                        text = sub,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                    }
+                  }
+                },
+                trailingIcon = {
+                  StatusDotLabel(tone = availTone, text = availLabel)
+                },
+                onClick = {
+                  onHostSelected(item.staff.id)
+                  hostDropdownExpanded = false
+                },
+                modifier = Modifier.testTag("host_dropdown_item_${item.staff.id}"),
+              )
             }
           }
         }
       }
 
-      selectedHost?.let { host ->
-        val seating = host.formattedSeating()
-        val extraParts =
-          listOfNotNull(
-            host.designation.takeIf { it.isNotBlank() }?.let { d ->
-              if (host.department.isNotBlank()) "$d (${host.department})" else d
-            },
-            seating.takeIf { it.isNotBlank() },
-            host.otherLocation.takeIf { it.isNotBlank() }?.let { "Alt: $it" },
-            host.requiredThings.takeIf { it.isNotBlank() }?.let { "Required: $it" },
-            host.notes.takeIf { it.isNotBlank() }?.let { "Note: $it" },
-          )
-        if (extraParts.isNotEmpty()) {
-          GlassInnerSurface(
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth(),
-          ) {
-            Text(
-              text = extraParts.joinToString(" · "),
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+      ExposedDropdownMenuBox(
+        expanded = reasonDropdownExpanded,
+        onExpandedChange = { reasonDropdownExpanded = !reasonDropdownExpanded },
+        modifier = Modifier.weight(0.85f),
+      ) {
+        OutlinedTextField(
+          value = form.selectedReason.ifBlank { "Reason" },
+          onValueChange = {},
+          readOnly = true,
+          label = { Text("Reason") },
+          trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = reasonDropdownExpanded) },
+          singleLine = true,
+          colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+          modifier =
+            Modifier
+              .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+              .fillMaxWidth()
+              .testTag("reason_dropdown_field"),
+        )
+
+        ExposedDropdownMenu(
+          expanded = reasonDropdownExpanded,
+          onDismissRequest = { reasonDropdownExpanded = false },
+        ) {
+          shownReasons.forEach { reason ->
+            DropdownMenuItem(
+              text = {
+                Text(
+                  text = reason.label,
+                  fontWeight =
+                    if (reason.label == form.selectedReason) FontWeight.Bold
+                    else FontWeight.Normal,
+                )
+              },
+              onClick = {
+                onReasonSelected(reason.label)
+                reasonDropdownExpanded = false
+              },
+              modifier = Modifier.testTag("reason_chip_${reason.label}"),
             )
           }
         }
       }
+    }
+
+    selectedHostItem?.let { item ->
+      val host = item.staff
+      val (availText, tone) = MainViewModel.resolveHostAvailabilityVisual(item)
+      val seating = host.formattedSeating()
+      val extraParts =
+        listOfNotNull(
+          seating.takeIf { it.isNotBlank() },
+          host.requiredThings.takeIf { it.isNotBlank() }?.let { "Req: $it" },
+          host.notes.takeIf { it.isNotBlank() }?.let { "Note: $it" },
+        )
+      if (extraParts.isNotEmpty()) {
+        GlassInnerSurface(
+          shape = RoundedCornerShape(10.dp),
+          borderColor = status.dotColor(tone).copy(alpha = 0.35f),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            StatusDotLabel(tone = tone, text = availText)
+            Text(
+              text = extraParts.joinToString(" · "),
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.weight(1f),
+            )
+          }
+        }
+      }
+    }
+
+    // 4. REMARK + DOB COMPACT ROW
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      OutlinedTextField(
+        value = form.remark,
+        onValueChange = onRemarkChanged,
+        label = { Text("Remark (opt.)") },
+        placeholder = { Text("e.g. 4 PM, parcel") },
+        singleLine = true,
+        modifier = Modifier.weight(1.1f).testTag("visitor_remark_input"),
+      )
+      OutlinedTextField(
+        value = form.dob,
+        onValueChange = onDobChanged,
+        label = { Text("DOB (opt.)") },
+        placeholder = { Text("mm/dd/yyyy") },
+        singleLine = true,
+        trailingIcon = {
+          IconButton(onClick = { showDobPicker = true }, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Rounded.CalendarToday, contentDescription = "Pick date of birth", modifier = Modifier.size(16.dp))
+          }
+        },
+        modifier = Modifier.weight(0.9f).testTag("visitor_dob_input"),
+      )
     }
 
     val ctaLabel =
@@ -769,132 +1015,58 @@ private fun VisitorEntryCard(
         append("Check in ")
         append(form.name.trim().ifBlank { "visitor" })
         selectedHost?.let {
-          append(" for ")
+          append(" · ")
           append(it.shownAs.ifBlank { it.fullName })
         }
       }
 
-    Button(
-      onClick = onCheckIn,
-      enabled = !form.isSubmitting && hostBoard.isNotEmpty(),
-      modifier = Modifier.fillMaxWidth().height(54.dp).testTag("check_in_button"),
-      shape = RoundedCornerShape(14.dp),
-      colors =
-        ButtonDefaults.buttonColors(
-          containerColor = MaterialTheme.colorScheme.primary,
-          contentColor = MaterialTheme.colorScheme.onPrimary,
-        ),
+    // 5. ACTION BAR: Check in + Clear
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+      verticalAlignment = Alignment.CenterVertically,
     ) {
-      if (form.isSubmitting) {
-        CircularProgressIndicator(
-          modifier = Modifier.size(22.dp),
-          color = MaterialTheme.colorScheme.onPrimary,
-          strokeWidth = 2.dp,
-        )
-      } else {
-        Text(ctaLabel, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-      }
-    }
-
-    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-      TextButton(
-        onClick = onClearForm,
-        modifier = Modifier.testTag("clear_form_button"),
+      Button(
+        onClick = onCheckIn,
+        enabled = !form.isSubmitting && hostBoard.isNotEmpty(),
+        modifier = Modifier.weight(1f).height(50.dp).testTag("check_in_button"),
+        shape = RoundedCornerShape(12.dp),
+        colors =
+          ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+          ),
       ) {
-        Text("Clear the form", color = MaterialTheme.colorScheme.onSurfaceVariant)
-      }
-    }
-  }
-}
-
-@Composable
-private fun HostSelectTile(
-  item: HostBoardItem,
-  selected: Boolean,
-  onClick: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
-  val bgColor =
-    if (selected) MaterialTheme.colorScheme.primaryContainer
-    else MaterialTheme.colorScheme.surfaceVariant
-  val titleColor =
-    if (selected) MaterialTheme.colorScheme.onPrimaryContainer
-    else MaterialTheme.colorScheme.onSurface
-  val subColor =
-    if (selected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
-    else MaterialTheme.colorScheme.onSurfaceVariant
-
-  val hostAvail = item.staff.parsedAvailability()
-  val statusText =
-    buildString {
-      if (item.inMeetingVisit != null) {
-        append("In meeting · ${item.meetingMinutes}m")
-      } else {
-        append(if (hostAvail == HostAvailability.AVAILABLE) "Free" else hostAvail.label)
-      }
-      if (item.waitingCount > 0) {
-        append(" · ${item.waitingCount} waiting")
-      }
-    }
-
-  Surface(
-    modifier =
-      modifier
-        .clip(RoundedCornerShape(12.dp))
-        .clickable(onClick = onClick)
-        .testTag("host_tile_${item.staff.id}"),
-    shape = RoundedCornerShape(12.dp),
-    color = bgColor,
-    border =
-      BorderStroke(
-        width = if (selected) 1.5.dp else 1.dp,
-        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-      ),
-  ) {
-    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        StaffAvatar(
-          name = item.staff.shownAs.ifBlank { item.staff.fullName },
-          photoUrl = item.staff.photoUrl,
-          size = 28.dp,
-          textStyle = MaterialTheme.typography.labelSmall,
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-          text = item.staff.shownAs.ifBlank { item.staff.fullName },
-          style = MaterialTheme.typography.titleSmall,
-          color = titleColor,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-        )
-      }
-      val seatingText = item.staff.formattedSeating().ifBlank { item.staff.cabin }
-      if (seatingText.isNotBlank()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(
-            Icons.Rounded.Chair,
-            contentDescription = null,
-            tint = subColor,
-            modifier = Modifier.size(12.dp),
+        if (form.isSubmitting) {
+          CircularProgressIndicator(
+            modifier = Modifier.size(20.dp),
+            color = MaterialTheme.colorScheme.onPrimary,
+            strokeWidth = 2.dp,
           )
-          Spacer(Modifier.width(4.dp))
-          Text(
-            text = seatingText,
-            style = MaterialTheme.typography.labelSmall,
-            color = subColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
+        } else {
+          Text(ctaLabel, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
       }
-      Spacer(Modifier.height(2.dp))
-      Text(
-        text = statusText,
-        style = MaterialTheme.typography.bodySmall,
-        color = subColor,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-      )
+
+      OutlinedButton(
+        onClick = onClearForm,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        contentPadding = PaddingValues(horizontal = 12.dp),
+        modifier = Modifier.height(50.dp).testTag("clear_form_button"),
+      ) {
+        Text("Clear", style = MaterialTheme.typography.labelMedium)
+      }
+
+      OutlinedButton(
+        onClick = onBookAppointment,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+        contentPadding = PaddingValues(horizontal = 10.dp),
+        modifier = Modifier.height(50.dp).testTag("reception_book_appt_button"),
+      ) {
+        Icon(Icons.Rounded.EventAvailable, contentDescription = "Book appointment", modifier = Modifier.size(18.dp))
+      }
     }
   }
 }
@@ -904,6 +1076,7 @@ private fun WhoIsFreeBoardCard(
   hostBoard: List<HostBoardItem>,
   onMarkDone: (Visit) -> Unit,
 ) {
+  val status = archPointStatusColors()
   GlassCard(contentPadding = PaddingValues(16.dp)) {
     Text(
       "WHO IS FREE",
@@ -925,17 +1098,31 @@ private fun WhoIsFreeBoardCard(
           horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
           pair.forEach { item ->
-            GlassInnerSurface(modifier = Modifier.weight(1f)) {
+            val (statusLabel, tone) = MainViewModel.resolveHostAvailabilityVisual(item)
+            val toneAccent = status.dotColor(tone)
+            GlassInnerSurface(
+              modifier = Modifier.weight(1f),
+              borderColor = toneAccent.copy(alpha = 0.35f),
+            ) {
               Column(
                 modifier = Modifier.padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
               ) {
-                Text(
-                  text = item.staff.shownAs.ifBlank { item.staff.fullName },
-                  style = MaterialTheme.typography.titleSmall,
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  StaffAvatar(
+                    name = item.staff.shownAs.ifBlank { item.staff.fullName },
+                    photoUrl = item.staff.photoUrl,
+                    size = 24.dp,
+                    textStyle = MaterialTheme.typography.labelSmall,
+                  )
+                  Spacer(Modifier.width(6.dp))
+                  Text(
+                    text = item.staff.shownAs.ifBlank { item.staff.fullName },
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                }
                 val seating = item.staff.formattedSeating().ifBlank { item.staff.cabin }
                 if (seating.isNotBlank()) {
                   Text(
@@ -946,11 +1133,8 @@ private fun WhoIsFreeBoardCard(
                     overflow = TextOverflow.Ellipsis,
                   )
                 }
+                StatusDotLabel(tone = tone, text = statusLabel)
                 if (item.inMeetingVisit != null) {
-                  FreeDotLabel(
-                    isFree = false,
-                    text = "In a meeting · ${item.meetingMinutes} min",
-                  )
                   Text(
                     text = "with ${item.inMeetingVisit.visitorName}",
                     style = MaterialTheme.typography.bodySmall,
@@ -958,7 +1142,7 @@ private fun WhoIsFreeBoardCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                   )
-                  Spacer(Modifier.height(4.dp))
+                  Spacer(Modifier.height(2.dp))
                   OutlinedButton(
                     onClick = { onMarkDone(item.inMeetingVisit) },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -967,11 +1151,6 @@ private fun WhoIsFreeBoardCard(
                     Text("Mark done", style = MaterialTheme.typography.labelSmall)
                   }
                 } else {
-                  val hostAvail = item.staff.parsedAvailability()
-                  FreeDotLabel(
-                    isFree = hostAvail == HostAvailability.AVAILABLE,
-                    text = if (hostAvail == HostAvailability.AVAILABLE) "Free" else hostAvail.label,
-                  )
                   Text(
                     text =
                       if (item.waitingCount > 0) "${item.waitingCount} waiting" else "nobody waiting",
@@ -1273,6 +1452,185 @@ private fun TodayDoneRow(visit: Visit) {
         containerColor = if (isDenied) status.deniedContainer else status.freeContainer,
         contentColor = if (isDenied) status.deniedOnContainer else status.freeOnContainer,
       )
+    }
+  }
+}
+
+@Composable
+private fun UpcomingAppointmentsCard(
+  appointments: List<Appointment>,
+  nowMillis: Long,
+  isBusy: Boolean,
+  onBookNew: () -> Unit,
+  onCheckInAppointment: (Appointment) -> Unit,
+  onEditAppointment: (Appointment) -> Unit,
+  onCancelAppointment: (Appointment) -> Unit,
+) {
+  GlassCard(contentPadding = PaddingValues(16.dp)) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = "UPCOMING APPOINTMENTS (${appointments.size})",
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+          text = "Pre-booked guests ready for 1-tap check-in",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+      Spacer(Modifier.width(8.dp))
+      OutlinedButton(
+        onClick = onBookNew,
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        modifier = Modifier.height(38.dp).testTag("reception_upcoming_book_button"),
+      ) {
+        Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(4.dp))
+        Text("Book")
+      }
+    }
+
+    if (appointments.isEmpty()) {
+      Text(
+        text = "No scheduled appointments yet. Hosts or Reception can book upcoming visits anytime.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    } else {
+      Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        appointments.forEach { appt ->
+          val dayLabel = DeskFormatters.formatAppointmentDayLabel(appt.scheduledDateIso, nowMillis)
+          val isToday = dayLabel == "Today"
+          GlassInnerSurface(
+            modifier = Modifier.fillMaxWidth().testTag("reception_appt_row_${appt.id}"),
+            borderColor =
+              if (isToday) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+              else null,
+          ) {
+            Column(
+              modifier = Modifier.fillMaxWidth().padding(12.dp),
+              verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+              ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                  StaffAvatar(
+                    name = appt.hostShownAs.ifBlank { "Host" },
+                    photoUrl = "",
+                    size = 34.dp,
+                    textStyle = MaterialTheme.typography.labelSmall,
+                  )
+                  Spacer(Modifier.width(10.dp))
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = appt.visitorName,
+                      style = MaterialTheme.typography.titleSmall,
+                      fontWeight = FontWeight.Bold,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                    )
+                    val meta =
+                      listOfNotNull(
+                        appt.visitorCompany.takeIf { it.isNotBlank() },
+                        "for ${appt.hostShownAs}".takeIf { appt.hostShownAs.isNotBlank() },
+                        appt.purpose.takeIf { it.isNotBlank() },
+                      ).joinToString(" · ")
+                    Text(
+                      text = meta,
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                    )
+                  }
+                }
+                Spacer(Modifier.width(8.dp))
+                StatusPill(
+                  text = "$dayLabel · ${appt.scheduledTimeLabel}",
+                  containerColor =
+                    if (isToday) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                  contentColor =
+                    if (isToday) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+
+              if (appt.location.isNotBlank() || appt.notes.isNotBlank()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  if (appt.location.isNotBlank()) {
+                    Icon(
+                      Icons.Rounded.LocationOn,
+                      contentDescription = null,
+                      tint = MaterialTheme.colorScheme.primary,
+                      modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                  }
+                  Text(
+                    text =
+                      listOfNotNull(
+                        appt.location.takeIf { it.isNotBlank() },
+                        appt.notes.takeIf { it.isNotBlank() },
+                      ).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                }
+              }
+
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                Button(
+                  onClick = { onCheckInAppointment(appt) },
+                  enabled = !isBusy,
+                  shape = RoundedCornerShape(10.dp),
+                  contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                  modifier = Modifier.weight(1.2f).height(40.dp).testTag("reception_appt_checkin_${appt.id}"),
+                ) {
+                  Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                  Spacer(Modifier.width(4.dp))
+                  Text("Check in", maxLines = 1)
+                }
+                OutlinedButton(
+                  onClick = { onEditAppointment(appt) },
+                  enabled = !isBusy,
+                  shape = RoundedCornerShape(10.dp),
+                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                  modifier = Modifier.weight(0.75f).height(40.dp).testTag("reception_appt_edit_${appt.id}"),
+                ) {
+                  Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                  Spacer(Modifier.width(4.dp))
+                  Text("Edit", maxLines = 1)
+                }
+                OutlinedButton(
+                  onClick = { onCancelAppointment(appt) },
+                  enabled = !isBusy,
+                  shape = RoundedCornerShape(10.dp),
+                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                  modifier = Modifier.weight(0.8f).height(40.dp).testTag("reception_appt_cancel_${appt.id}"),
+                ) {
+                  Text("Cancel", maxLines = 1)
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

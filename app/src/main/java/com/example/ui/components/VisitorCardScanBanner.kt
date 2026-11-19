@@ -5,6 +5,11 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -69,11 +74,14 @@ private fun createTempCardScanUri(context: Context): Uri {
   )
 }
 
+/**
+ * Compact card-scan launcher button meant to sit inline beside the Search Returning Visitor field,
+ * plus an expandable status strip below only when actively scanning, succeeded, or errored.
+ */
 @Composable
-fun VisitorCardScanBanner(
+fun VisitorCardScanAction(
   scanState: CardScanState,
   onScanCardUri: (Uri) -> Unit,
-  onClearScan: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -149,6 +157,7 @@ fun VisitorCardScanBanner(
     )
   }
 
+  val isScanning = scanState is CardScanState.Scanning
   val previewBitmap: ImageBitmap? =
     when (scanState) {
       CardScanState.Idle -> null
@@ -157,145 +166,143 @@ fun VisitorCardScanBanner(
       is CardScanState.Error -> scanState.preview
     }
 
-  val isScanning = scanState is CardScanState.Scanning
-
   val borderColor =
     when (scanState) {
-      is CardScanState.Success -> status.freeText.copy(alpha = 0.55f)
-      is CardScanState.Error -> MaterialTheme.colorScheme.error.copy(alpha = 0.55f)
-      is CardScanState.Scanning -> MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-      CardScanState.Idle -> MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+      is CardScanState.Success -> status.freeText.copy(alpha = 0.65f)
+      is CardScanState.Error -> MaterialTheme.colorScheme.error.copy(alpha = 0.65f)
+      is CardScanState.Scanning -> MaterialTheme.colorScheme.primary
+      CardScanState.Idle -> MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
     }
 
-  GlassInnerSurface(
-    modifier = modifier.fillMaxWidth().testTag("visitor_card_scanner_banner"),
-    shape = RoundedCornerShape(14.dp),
-    borderColor = borderColor,
+  Surface(
+    modifier =
+      modifier
+        .height(54.dp)
+        .clip(RoundedCornerShape(12.dp))
+        .clickable(enabled = !isScanning) { showSourceChooser = true }
+        .testTag("visitor_card_image_clickable"),
+    shape = RoundedCornerShape(12.dp),
+    color =
+      when (scanState) {
+        is CardScanState.Success -> status.freeContainer
+        is CardScanState.Error -> MaterialTheme.colorScheme.errorContainer
+        else -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f)
+      },
+    border = BorderStroke(1.dp, borderColor),
   ) {
-    Column(
-      modifier = Modifier.fillMaxWidth().padding(12.dp),
-      verticalArrangement = Arrangement.spacedBy(10.dp),
+    Row(
+      modifier = Modifier.padding(horizontal = 12.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+      if (isScanning) {
+        CircularProgressIndicator(
+          modifier = Modifier.size(18.dp),
+          strokeWidth = 2.dp,
+        )
+      } else if (previewBitmap != null) {
+        Image(
+          bitmap = previewBitmap,
+          contentDescription = "Scanned card image",
+          contentScale = ContentScale.Crop,
+          modifier = Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)),
+        )
+      } else {
+        Icon(
+          imageVector = Icons.Rounded.DocumentScanner,
+          contentDescription = "Scan visitor card",
+          tint = MaterialTheme.colorScheme.onPrimaryContainer,
+          modifier = Modifier.size(18.dp),
+        )
+      }
+      Text(
+        text =
+          when (scanState) {
+            is CardScanState.Scanning -> "Reading..."
+            is CardScanState.Success -> "Rescan"
+            is CardScanState.Error -> "Retry"
+            CardScanState.Idle -> "Scan card"
+          },
+        style = MaterialTheme.typography.labelLarge,
+        color =
+          when (scanState) {
+            is CardScanState.Success -> status.freeOnContainer
+            is CardScanState.Error -> MaterialTheme.colorScheme.onErrorContainer
+            else -> MaterialTheme.colorScheme.onPrimaryContainer
+          },
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+      )
+    }
+  }
+}
+
+@Composable
+fun VisitorCardScanStatusStrip(
+  scanState: CardScanState,
+  onClearScan: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val status = archPointStatusColors()
+  AnimatedVisibility(
+    visible = scanState !is CardScanState.Idle,
+    enter = expandVertically() + fadeIn(),
+    exit = shrinkVertically() + fadeOut(),
+    modifier = modifier.fillMaxWidth(),
+  ) {
+    val previewBitmap: ImageBitmap? =
+      when (scanState) {
+        CardScanState.Idle -> null
+        is CardScanState.Scanning -> scanState.preview
+        is CardScanState.Success -> scanState.preview
+        is CardScanState.Error -> scanState.preview
+      }
+    val borderColor =
+      when (scanState) {
+        is CardScanState.Success -> status.freeText.copy(alpha = 0.55f)
+        is CardScanState.Error -> MaterialTheme.colorScheme.error.copy(alpha = 0.55f)
+        else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+      }
+
+    GlassInnerSurface(
+      modifier = Modifier.fillMaxWidth().testTag("visitor_card_scanner_banner"),
+      shape = RoundedCornerShape(12.dp),
+      borderColor = borderColor,
     ) {
       Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
       ) {
-        // Clickable visitor card image thumbnail
-        Surface(
-          modifier =
-            Modifier
-              .width(92.dp)
-              .height(62.dp)
-              .clip(RoundedCornerShape(10.dp))
-              .clickable(enabled = !isScanning) { showSourceChooser = true }
-              .testTag("visitor_card_image_clickable"),
-          shape = RoundedCornerShape(10.dp),
-          border = BorderStroke(1.dp, borderColor),
-        ) {
-          Box(
-            modifier =
-              Modifier
-                .fillMaxSize()
-                .background(
-                  Brush.linearGradient(
-                    listOf(
-                      MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
-                      MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
-                    )
-                  )
-                ),
-            contentAlignment = Alignment.Center,
-          ) {
-            if (previewBitmap != null) {
-              Image(
-                bitmap = previewBitmap,
-                contentDescription = "Clicked visitor card image",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-              )
-            } else {
-              Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-              ) {
-                Icon(
-                  imageVector = Icons.Rounded.DocumentScanner,
-                  contentDescription = "Tap visitor card image to scan",
-                  tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                  modifier = Modifier.size(22.dp),
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                  text = "Card photo",
-                  style = MaterialTheme.typography.labelSmall,
-                  color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-              }
-            }
-            if (isScanning) {
-              Box(
-                modifier =
-                  Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.65f)),
-                contentAlignment = Alignment.Center,
-              ) {
-                CircularProgressIndicator(
-                  modifier = Modifier.size(22.dp),
-                  strokeWidth = 2.5.dp,
-                )
-              }
-            }
-          }
+        if (previewBitmap != null) {
+          Image(
+            bitmap = previewBitmap,
+            contentDescription = "Clicked visitor card image",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.width(52.dp).height(34.dp).clip(RoundedCornerShape(6.dp)),
+          )
         }
-
-        Column(
-          modifier = Modifier.weight(1f),
-          verticalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
+        Column(modifier = Modifier.weight(1f)) {
           when (scanState) {
-            CardScanState.Idle -> {
-              Text(
-                text = "Tap card image to auto-fill",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-              )
-              Text(
-                text = "Snap or pick a visitor's business card to fill Name, Org, Phone & Email.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-              )
-            }
-
             is CardScanState.Scanning -> {
               Text(
                 text = "Reading visitor card...",
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.SemiBold,
-              )
-              Text(
-                text = "Extracting contact details from card image",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
               )
             }
-
             is CardScanState.Success -> {
               Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                   imageVector = Icons.Rounded.CheckCircle,
                   contentDescription = null,
                   tint = status.freeText,
-                  modifier = Modifier.size(16.dp),
+                  modifier = Modifier.size(15.dp),
                 )
-                Spacer(Modifier.width(5.dp))
+                Spacer(Modifier.width(4.dp))
                 Text(
-                  text = "Details filled from card",
-                  style = MaterialTheme.typography.titleSmall,
+                  text = "Filled from card",
+                  style = MaterialTheme.typography.labelLarge,
                   color = status.freeText,
                   fontWeight = FontWeight.SemiBold,
                 )
@@ -305,87 +312,58 @@ fun VisitorCardScanBanner(
                   scanState.card.name.takeIf { it.isNotBlank() },
                   scanState.card.company.takeIf { it.isNotBlank() },
                   scanState.card.mobile.takeIf { it.isNotBlank() },
-                  scanState.card.email.takeIf { it.isNotBlank() },
                 ).joinToString(" · ")
               if (summary.isNotBlank()) {
                 Text(
                   text = summary,
                   style = MaterialTheme.typography.bodySmall,
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
-                  maxLines = 2,
+                  maxLines = 1,
                   overflow = TextOverflow.Ellipsis,
                 )
               }
             }
-
             is CardScanState.Error -> {
               Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                   imageVector = Icons.Rounded.ErrorOutline,
                   contentDescription = null,
                   tint = MaterialTheme.colorScheme.error,
-                  modifier = Modifier.size(16.dp),
+                  modifier = Modifier.size(15.dp),
                 )
-                Spacer(Modifier.width(5.dp))
+                Spacer(Modifier.width(4.dp))
                 Text(
-                  text = "Could not read card",
-                  style = MaterialTheme.typography.titleSmall,
+                  text = scanState.message,
+                  style = MaterialTheme.typography.bodySmall,
                   color = MaterialTheme.colorScheme.error,
-                  fontWeight = FontWeight.SemiBold,
+                  maxLines = 2,
+                  overflow = TextOverflow.Ellipsis,
                 )
               }
-              Text(
-                text = scanState.message,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-              )
             }
+            CardScanState.Idle -> Unit
           }
         }
-
-        if (scanState !is CardScanState.Idle) {
-          IconButton(
-            onClick = onClearScan,
-            modifier = Modifier.size(40.dp).testTag("clear_card_scan_button"),
-          ) {
-            Icon(
-              imageVector = Icons.Rounded.Clear,
-              contentDescription = "Clear scanned card",
-              modifier = Modifier.size(18.dp),
-            )
-          }
-        }
-      }
-
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
-        OutlinedButton(
-          onClick = launchCamera,
-          enabled = !isScanning,
-          shape = RoundedCornerShape(10.dp),
-          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-          modifier = Modifier.weight(1f).height(42.dp).testTag("scan_card_camera_button"),
+        IconButton(
+          onClick = onClearScan,
+          modifier = Modifier.size(36.dp).testTag("clear_card_scan_button"),
         ) {
-          Icon(Icons.Rounded.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
-          Spacer(Modifier.width(6.dp))
-          Text("Snap card", style = MaterialTheme.typography.labelMedium)
-        }
-        OutlinedButton(
-          onClick = launchGallery,
-          enabled = !isScanning,
-          shape = RoundedCornerShape(10.dp),
-          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-          modifier = Modifier.weight(1f).height(42.dp).testTag("scan_card_gallery_button"),
-        ) {
-          Icon(Icons.Rounded.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
-          Spacer(Modifier.width(6.dp))
-          Text("Choose image", style = MaterialTheme.typography.labelMedium)
+          Icon(Icons.Rounded.Clear, contentDescription = "Clear scanned card", modifier = Modifier.size(16.dp))
         }
       }
     }
+  }
+}
+
+@Composable
+fun VisitorCardScanBanner(
+  scanState: CardScanState,
+  onScanCardUri: (Uri) -> Unit,
+  onClearScan: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    VisitorCardScanAction(scanState = scanState, onScanCardUri = onScanCardUri)
+    VisitorCardScanStatusStrip(scanState = scanState, onClearScan = onClearScan)
   }
 }

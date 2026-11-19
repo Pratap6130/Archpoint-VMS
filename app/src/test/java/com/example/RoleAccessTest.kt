@@ -30,13 +30,13 @@ class RoleAccessTest {
   @Test
   fun adminDashboardExcludesReceptionTab() {
     val nonHostAdminTabs = MainViewModel.resolveTabsForRole(StaffRole.ADMIN, hostListed = false)
-    assertEquals(listOf(AppTab.ADMIN, AppTab.VISITOR_LOG, AppTab.PROFILE), nonHostAdminTabs)
+    assertEquals(listOf(AppTab.ADMIN, AppTab.VISITOR_LOG, AppTab.PR, AppTab.PROFILE), nonHostAdminTabs)
     assertFalse(AppTab.RECEPTION in nonHostAdminTabs)
     assertFalse(AppTab.MY_VISITORS in nonHostAdminTabs)
 
     val hostListedAdminTabs = MainViewModel.resolveTabsForRole(StaffRole.ADMIN, hostListed = true)
     assertEquals(
-      listOf(AppTab.ADMIN, AppTab.VISITOR_LOG, AppTab.MY_VISITORS, AppTab.PROFILE),
+      listOf(AppTab.ADMIN, AppTab.VISITOR_LOG, AppTab.PR, AppTab.MY_VISITORS, AppTab.PROFILE),
       hostListedAdminTabs,
     )
     assertFalse(AppTab.RECEPTION in hostListedAdminTabs)
@@ -45,13 +45,13 @@ class RoleAccessTest {
   @Test
   fun receptionDashboardExcludesAdminAndGlobalVisitorLogTabs() {
     val receptionTabs = MainViewModel.resolveTabsForRole(StaffRole.RECEPTION, hostListed = false)
-    assertEquals(listOf(AppTab.RECEPTION, AppTab.PROFILE), receptionTabs)
+    assertEquals(listOf(AppTab.RECEPTION, AppTab.PR, AppTab.PROFILE), receptionTabs)
     assertFalse(AppTab.ADMIN in receptionTabs)
     assertFalse(AppTab.VISITOR_LOG in receptionTabs)
 
     val hostListedReceptionTabs = MainViewModel.resolveTabsForRole(StaffRole.RECEPTION, hostListed = true)
     assertEquals(
-      listOf(AppTab.RECEPTION, AppTab.MY_VISITORS, AppTab.PROFILE),
+      listOf(AppTab.RECEPTION, AppTab.PR, AppTab.MY_VISITORS, AppTab.PROFILE),
       hostListedReceptionTabs,
     )
     assertFalse(AppTab.ADMIN in hostListedReceptionTabs)
@@ -59,9 +59,9 @@ class RoleAccessTest {
   }
 
   @Test
-  fun hostDashboardIsLimitedToMyDeskAndProfile() {
+  fun hostDashboardIsLimitedToMyDeskPrAndProfile() {
     val hostTabs = MainViewModel.resolveTabsForRole(StaffRole.HOST, hostListed = true)
-    assertEquals(listOf(AppTab.MY_VISITORS, AppTab.PROFILE), hostTabs)
+    assertEquals(listOf(AppTab.MY_VISITORS, AppTab.PR, AppTab.PROFILE), hostTabs)
     assertFalse(AppTab.RECEPTION in hostTabs)
     assertFalse(AppTab.ADMIN in hostTabs)
     assertFalse(AppTab.VISITOR_LOG in hostTabs)

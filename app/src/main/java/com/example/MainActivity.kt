@@ -1,7 +1,9 @@
 package com.example
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -77,7 +79,9 @@ import com.example.ui.components.HostDashboard
 import com.example.ui.screens.AccessNotAssignedScreen
 import com.example.ui.screens.AccountDeactivatedScreen
 import com.example.ui.screens.AdminScreen
+import com.example.ui.screens.AppSettingsBottomSheet
 import com.example.ui.screens.AuthScreen
+import com.example.ui.screens.PRScreen
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.ReceptionScreen
 import com.example.ui.screens.VisitorLogScreen
@@ -105,6 +109,19 @@ class MainActivity : ComponentActivity() {
     )
     VisitorAlertManager.ensureChannels(this)
     extractTargetTab(intent)?.let { pendingTargetTab.value = it }
+    runCatching {
+      val logoBmp = BitmapFactory.decodeResource(resources, R.drawable.img_archpoint_mark)
+      @Suppress("DEPRECATION")
+      setTaskDescription(
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+          ActivityManager.TaskDescription.Builder()
+            .setLabel(getString(R.string.app_name))
+            .build()
+        } else {
+          ActivityManager.TaskDescription(getString(R.string.app_name), logoBmp)
+        }
+      )
+    }
 
     val themePreferences = ThemePreferences(applicationContext)
 
@@ -478,6 +495,25 @@ private fun AuthenticatedDeskHost(
         snapshot.currentStaff?.shownAs?.ifBlank { snapshot.currentStaff.fullName }
           ?: currentUserDisplayName.ifBlank { currentUserEmail.substringBefore("@") }
 
+      var showSettingsSheet by remember { mutableStateOf(false) }
+
+      if (showSettingsSheet) {
+        AppSettingsBottomSheet(
+          themeMode = themeMode,
+          notificationsEnabled = notificationsEnabled,
+          backgroundServiceRunning = backgroundAlertsEnabled,
+          userEmail = currentUserEmail,
+          roleLabel = snapshot.activeRole.label,
+          onDismiss = { showSettingsSheet = false },
+          onSelectTheme = onSelectTheme,
+          onTurnOnAlerts = turnOnAlerts,
+          onToggleBackgroundAlerts = toggleBackgroundAlerts,
+          onOpenBatterySettings = openBatterySettings,
+          onSendTestAlert = { VisitorAlertManager.sendTestAlert(context) },
+          onSignOut = handleSignOut,
+        )
+      }
+
       GlassBackdrop(modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
           val useRail = maxWidth >= 840.dp
@@ -501,6 +537,7 @@ private fun AuthenticatedDeskHost(
                 role = snapshot.activeRole,
                 officeName = snapshot.office?.name.orEmpty(),
                 onOpenProfile = { viewModel.selectTab(AppTab.PROFILE) },
+                onOpenSettings = { showSettingsSheet = true },
               )
             },
             bottomBar = {
@@ -539,6 +576,8 @@ private fun AuthenticatedDeskHost(
                         cardScanState = cardScanState,
                         hostBoard = hostBoard,
                         nowMillis = nowMillis,
+                        appointments = snapshot.appointments,
+                        isBusy = isBusy,
                         onSearchQueryChanged = { viewModel.onVisitorSearchQueryChanged(officeId, it) },
                         onTriggerSearch = { viewModel.triggerVisitorSearch(officeId) },
                         onClearSearch = { viewModel.clearVisitorSearch() },
@@ -581,6 +620,28 @@ private fun AuthenticatedDeskHost(
                         onRemind = { visit -> viewModel.remindHost(officeId, visit) },
                         onSendIn = { visit -> viewModel.sendVisitorIn(officeId, visit, "Sent in") },
                         onMarkDone = { visit -> viewModel.markMeetingDone(officeId, visit) },
+                        onSaveAppointment = { existing, vName, vMob, vComp, vEmail, purpose, loc, dateIso, timeLbl, notes, host ->
+                          viewModel.saveAppointment(
+                            snapshot = snapshot,
+                            existing = existing,
+                            visitorName = vName,
+                            visitorMobile = vMob,
+                            visitorCompany = vComp,
+                            visitorEmail = vEmail,
+                            purpose = purpose,
+                            location = loc,
+                            scheduledDateIso = dateIso,
+                            scheduledTimeLabel = timeLbl,
+                            notes = notes,
+                            assignedHostStaff = host,
+                          )
+                        },
+                        onCheckInAppointment = { appt ->
+                          viewModel.checkInFromAppointment(snapshot, appt)
+                        },
+                        onUpdateAppointmentStatus = { appt, newStatus ->
+                          viewModel.updateAppointmentStatus(snapshot, appt, newStatus)
+                        },
                       )
 
                     AppTab.MY_VISITORS ->
@@ -590,6 +651,8 @@ private fun AuthenticatedDeskHost(
                         userEmail = currentUserEmail,
                         nowMillis = nowMillis,
                         inFlightVisitIds = inFlightVisitIds,
+                        appointments = snapshot.appointments,
+                        isBusy = isBusy,
                         onUpdateAvailability = { availability ->
                           viewModel.updateOwnAvailabilityStatus(snapshot, availability)
                         },
@@ -603,6 +666,25 @@ private fun AuthenticatedDeskHost(
                           viewModel.denyVisitorToday(officeId, visit, reasonNote)
                         },
                         onMeetingDone = { visit -> viewModel.markMeetingDone(officeId, visit) },
+                        onSaveAppointment = { existing, vName, vMob, vComp, vEmail, purpose, loc, dateIso, timeLbl, notes, host ->
+                          viewModel.saveAppointment(
+                            snapshot = snapshot,
+                            existing = existing,
+                            visitorName = vName,
+                            visitorMobile = vMob,
+                            visitorCompany = vComp,
+                            visitorEmail = vEmail,
+                            purpose = purpose,
+                            location = loc,
+                            scheduledDateIso = dateIso,
+                            scheduledTimeLabel = timeLbl,
+                            notes = notes,
+                            assignedHostStaff = host,
+                          )
+                        },
+                        onUpdateAppointmentStatus = { appt, newStatus ->
+                          viewModel.updateAppointmentStatus(snapshot, appt, newStatus)
+                        },
                       )
 
                     AppTab.VISITOR_LOG ->
@@ -614,6 +696,93 @@ private fun AuthenticatedDeskHost(
                           viewModel.selectTab(AppTab.VISITOR_LOG)
                           android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT)
                             .show()
+                        },
+                      )
+
+                    AppTab.PR ->
+                      PRScreen(
+                        snapshot = snapshot,
+                        nowMillis = nowMillis,
+                        isBusy = isBusy,
+                        onSaveCampaign = { existing, title, channel, st, targetDate, location, audience, notes, owner ->
+                          viewModel.savePrCampaign(
+                            snapshot = snapshot,
+                            existing = existing,
+                            title = title,
+                            channel = channel,
+                            status = st,
+                            targetDateLabel = targetDate,
+                            location = location,
+                            audienceSummary = audience,
+                            notes = notes,
+                            ownerStaff = owner,
+                          )
+                        },
+                        onAdvanceCampaignStatus = { campaign ->
+                          viewModel.advancePrCampaignStatus(snapshot, campaign)
+                        },
+                        onDeleteCampaign = { campaign ->
+                          viewModel.deletePrCampaign(snapshot, campaign)
+                        },
+                        onSaveContact = { existing, name, org, desig, tier, mobile, email, followUp, nextDate, photoUrl, dob, anniv, giftPref, city, notes, owner ->
+                          viewModel.savePrContact(
+                            snapshot = snapshot,
+                            existing = existing,
+                            name = name,
+                            organization = org,
+                            designation = desig,
+                            tier = tier,
+                            mobile = mobile,
+                            email = email,
+                            followUpStatus = followUp,
+                            nextFollowUpDate = nextDate,
+                            notes = notes,
+                            ownerStaff = owner,
+                            photoUrl = photoUrl,
+                            dob = dob,
+                            anniversaryDate = anniv,
+                            specialGiftPreference = giftPref,
+                            cityOrAddress = city,
+                          )
+                        },
+                        onMarkWished = { contact ->
+                          viewModel.markPrContactWished(snapshot, contact)
+                        },
+                        onCycleContactFollowUp = { contact ->
+                          viewModel.cyclePrContactFollowUp(snapshot, contact)
+                        },
+                        onDeleteContact = { contact ->
+                          viewModel.deletePrContact(snapshot, contact)
+                        },
+                        onPromoteVisitor = { profile, tier ->
+                          viewModel.promoteVisitorToPrContact(snapshot, profile, tier)
+                        },
+                        onPromoteHostClient = { client, tier ->
+                          viewModel.promoteHostClientToPrContact(snapshot, client, tier)
+                        },
+                        onSendContactToCheckIn = { contact ->
+                          viewModel.sendPrContactToReceptionCheckIn(snapshot, contact)
+                        },
+                        onSaveGift = { existing, person, company, item, dir, st, occasion, dateLabel, notes, owner ->
+                          viewModel.savePrGift(
+                            snapshot = snapshot,
+                            existing = existing,
+                            recipientOrSender = person,
+                            company = company,
+                            itemTitle = item,
+                            direction = dir,
+                            status = st,
+                            occasion = occasion,
+                            dateLabel = dateLabel,
+                            notes = notes,
+                            ownerStaff = owner,
+                          )
+                        },
+                        onAdvanceGiftStatus = { gift ->
+                          viewModel.advancePrGiftStatus(snapshot, gift)
+                        },
+                        onDeleteGift = { gift ->
+                          viewModel.deletePrGift(snapshot, gift)
                         },
                       )
 
@@ -654,9 +823,14 @@ private fun AuthenticatedDeskHost(
                         backgroundServiceRunning = backgroundAlertsEnabled,
                         isBusy = isBusy,
                         onSelectTheme = onSelectTheme,
-                        onSaveOwnSeating = { floor, cabin, otherLocation, requiredThings, notes ->
-                          viewModel.updateOwnSeatingAndRequirements(
+                        onSaveOwnProfile = { fullName, shownAs, designation, department, photoUrl, floor, cabin, otherLocation, requiredThings, notes ->
+                          viewModel.updateOwnProfile(
                             snapshot = snapshot,
+                            fullName = fullName,
+                            shownAs = shownAs,
+                            designation = designation,
+                            department = department,
+                            photoUrl = photoUrl,
                             floor = floor,
                             cabin = cabin,
                             otherLocation = otherLocation,
@@ -664,6 +838,7 @@ private fun AuthenticatedDeskHost(
                             notes = notes,
                           )
                         },
+                        onOpenSettings = { showSettingsSheet = true },
                         onTurnOnAlerts = turnOnAlerts,
                         onToggleBackgroundAlerts = toggleBackgroundAlerts,
                         onOpenBatterySettings = openBatterySettings,

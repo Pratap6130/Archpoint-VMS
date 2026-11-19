@@ -21,6 +21,103 @@ object DeskFormatters {
 
   fun formatCsvDate(date: Date?): String = date?.let { isoDateFormat.format(it) } ?: ""
 
+  fun formatIsoDate(millis: Long): String = isoDateFormat.format(Date(millis))
+
+  fun currentYear(nowMillis: Long = System.currentTimeMillis()): Int {
+    val cal = Calendar.getInstance().apply { timeInMillis = nowMillis }
+    return cal.get(Calendar.YEAR)
+  }
+
+  fun parseScheduledMillis(dateIso: String, timeLabel: String): Long {
+    val cleanDate = dateIso.trim()
+    val parsedDate = runCatching { isoDateFormat.parse(cleanDate) }.getOrNull() ?: return 0L
+    val cal = Calendar.getInstance().apply {
+      time = parsedDate
+      set(Calendar.HOUR_OF_DAY, 10)
+      set(Calendar.MINUTE, 0)
+      set(Calendar.SECOND, 0)
+      set(Calendar.MILLISECOND, 0)
+    }
+    val cleanTime = timeLabel.trim().uppercase(Locale.US)
+    val match = Regex("^(\\d{1,2})(?::(\\d{2}))?\\s*(AM|PM)?$").find(cleanTime)
+    if (match != null) {
+      var hour = match.groupValues[1].toIntOrNull() ?: 10
+      val minute = match.groupValues[2].toIntOrNull() ?: 0
+      val amPm = match.groupValues[3]
+      if (amPm == "PM" && hour in 1..11) hour += 12
+      if (amPm == "AM" && hour == 12) hour = 0
+      cal.set(Calendar.HOUR_OF_DAY, hour.coerceIn(0, 23))
+      cal.set(Calendar.MINUTE, minute.coerceIn(0, 59))
+    }
+    return cal.timeInMillis
+  }
+
+  fun formatAppointmentDayLabel(dateIso: String, nowMillis: Long = System.currentTimeMillis()): String {
+    val parsed = runCatching { isoDateFormat.parse(dateIso.trim()) }.getOrNull() ?: return dateIso
+    val todayIso = formatIsoDate(startOfTodayMillis(nowMillis))
+    val tomorrowCal = Calendar.getInstance().apply {
+      timeInMillis = startOfTodayMillis(nowMillis)
+      add(Calendar.DAY_OF_YEAR, 1)
+    }
+    val tomorrowIso = formatIsoDate(tomorrowCal.timeInMillis)
+    return when (dateIso.trim()) {
+      todayIso -> "Today"
+      tomorrowIso -> "Tomorrow"
+      else -> SimpleDateFormat("dd MMM", Locale.getDefault()).format(parsed)
+    }
+  }
+
+  fun parseMonthDayFromDob(rawDob: String): Pair<Int, Int>? {
+    val clean = rawDob.trim()
+    if (clean.isEmpty()) return null
+    val slashMatch = Regex("^(\\d{1,2})/(\\d{1,2})(?:/(\\d{2,4}))?$").find(clean)
+    if (slashMatch != null) {
+      val first = slashMatch.groupValues[1].toIntOrNull() ?: return null
+      val second = slashMatch.groupValues[2].toIntOrNull() ?: return null
+      // Handles MM/dd/yyyy (from DatePicker) and dd/MM/yyyy if first > 12
+      return if (first > 12 && second in 1..12) {
+        second to first
+      } else if (first in 1..12 && second in 1..31) {
+        first to second
+      } else {
+        null
+      }
+    }
+    val isoMatch = Regex("^(\\d{4})-(\\d{1,2})-(\\d{1,2})$").find(clean)
+    if (isoMatch != null) {
+      val m = isoMatch.groupValues[2].toIntOrNull() ?: return null
+      val d = isoMatch.groupValues[3].toIntOrNull() ?: return null
+      return if (m in 1..12 && d in 1..31) m to d else null
+    }
+    val textPatterns = listOf("dd MMM yyyy", "dd MMM", "MMM dd yyyy", "MMM dd")
+    for (pattern in textPatterns) {
+      val parsed = runCatching { SimpleDateFormat(pattern, Locale.US).apply { isLenient = false }.parse(clean) }.getOrNull()
+      if (parsed != null) {
+        val cal = Calendar.getInstance().apply { time = parsed }
+        return (cal.get(Calendar.MONTH) + 1) to cal.get(Calendar.DAY_OF_MONTH)
+      }
+    }
+    return null
+  }
+
+  fun daysUntilBirthday(rawDob: String, nowMillis: Long = System.currentTimeMillis()): Int? {
+    val (month1, day) = parseMonthDayFromDob(rawDob) ?: return null
+    val todayCal = Calendar.getInstance().apply {
+      timeInMillis = startOfTodayMillis(nowMillis)
+    }
+    val nextCal = Calendar.getInstance().apply {
+      timeInMillis = todayCal.timeInMillis
+      set(Calendar.MONTH, month1 - 1)
+      set(Calendar.DAY_OF_MONTH, day.coerceAtMost(getActualMaximum(Calendar.DAY_OF_MONTH)))
+    }
+    if (nextCal.timeInMillis < todayCal.timeInMillis) {
+      nextCal.add(Calendar.YEAR, 1)
+      nextCal.set(Calendar.MONTH, month1 - 1)
+      nextCal.set(Calendar.DAY_OF_MONTH, day.coerceAtMost(nextCal.getActualMaximum(Calendar.DAY_OF_MONTH)))
+    }
+    return ((nextCal.timeInMillis - todayCal.timeInMillis) / 86_400_000L).toInt().coerceAtLeast(0)
+  }
+
   fun minutesBetween(startMillis: Long?, endMillis: Long): Long {
     if (startMillis == null || startMillis <= 0L) return 0L
     return ((endMillis - startMillis) / 60_000L).coerceAtLeast(0L)

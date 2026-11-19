@@ -144,6 +144,117 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["visitorMobile", "dob", "recordedByUid", "createdAt"]
+    },
+    "PRCampaign": {
+      "title": "PRCampaign",
+      "description": "Public relations campaign, exhibition, press feature, or festive outreach event.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "channel": { "type": "string", "enum": ["Press / Media", "Event", "Social & Digital", "VIP Outreach", "Festive Gifting"] },
+        "status": { "type": "string", "enum": ["Planned", "Active", "Live", "Completed"] },
+        "targetDateLabel": { "type": "string" },
+        "location": { "type": "string" },
+        "audienceSummary": { "type": "string" },
+        "notes": { "type": "string" },
+        "ownerStaffId": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdByEmail": { "type": "string" },
+        "officeOwnerUid": { "type": "string" },
+        "allowedReaderEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "channel", "status", "targetDateLabel", "location", "audienceSummary", "notes", "ownerStaffId", "ownerName", "ownerEmail", "createdByUid", "createdByEmail", "officeOwnerUid", "allowedReaderEmails", "createdAt", "updatedAt"]
+    },
+    "PRContact": {
+      "title": "PRContact",
+      "description": "Media journalist, VIP patron, or strategic PR partner contact record with profile photo, birthday, and gifting preferences.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "organization": { "type": "string" },
+        "designation": { "type": "string" },
+        "tier": { "type": "string", "enum": ["VIP", "Media", "Partner"] },
+        "mobile": { "type": "string" },
+        "email": { "type": "string" },
+        "followUpStatus": { "type": "string", "enum": ["Warm", "Follow-up Due", "Scheduled", "Connected"] },
+        "nextFollowUpDate": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "dob": { "type": "string" },
+        "anniversaryDate": { "type": "string" },
+        "lastWishedYear": { "type": "integer" },
+        "specialGiftPreference": { "type": "string" },
+        "cityOrAddress": { "type": "string" },
+        "notes": { "type": "string" },
+        "ownerStaffId": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdByEmail": { "type": "string" },
+        "officeOwnerUid": { "type": "string" },
+        "allowedReaderEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "organization", "designation", "tier", "mobile", "email", "followUpStatus", "nextFollowUpDate", "notes", "ownerStaffId", "ownerName", "ownerEmail", "createdByUid", "createdByEmail", "officeOwnerUid", "allowedReaderEmails", "createdAt", "updatedAt"]
+    },
+    "PRGift": {
+      "title": "PRGift",
+      "description": "Corporate gifting, press kit, and hospitality log for PR outreach.",
+      "type": "object",
+      "properties": {
+        "recipientOrSender": { "type": "string" },
+        "company": { "type": "string" },
+        "itemTitle": { "type": "string" },
+        "direction": { "type": "string", "enum": ["Sent", "Received"] },
+        "status": { "type": "string", "enum": ["Prepared", "Dispatched", "Delivered", "Acknowledged"] },
+        "occasion": { "type": "string" },
+        "dateLabel": { "type": "string" },
+        "notes": { "type": "string" },
+        "ownerStaffId": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdByEmail": { "type": "string" },
+        "officeOwnerUid": { "type": "string" },
+        "allowedReaderEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["recipientOrSender", "company", "itemTitle", "direction", "status", "occasion", "dateLabel", "notes", "ownerStaffId", "ownerName", "ownerEmail", "createdByUid", "createdByEmail", "officeOwnerUid", "allowedReaderEmails", "createdAt", "updatedAt"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "Upcoming scheduled appointment booked by host or reception, scoped strictly to the assigned host email and reception/admin desk.",
+      "type": "object",
+      "properties": {
+        "visitorName": { "type": "string" },
+        "visitorMobile": { "type": "string" },
+        "visitorCompany": { "type": "string" },
+        "visitorEmail": { "type": "string" },
+        "purpose": { "type": "string" },
+        "location": { "type": "string" },
+        "scheduledDateIso": { "type": "string" },
+        "scheduledTimeLabel": { "type": "string" },
+        "scheduledAtMillis": { "type": "integer" },
+        "notes": { "type": "string" },
+        "hostStaffId": { "type": "string" },
+        "hostShownAs": { "type": "string" },
+        "hostEmail": { "type": "string" },
+        "hostCabin": { "type": "string" },
+        "status": { "type": "string", "enum": ["Scheduled", "Checked in", "Completed", "Cancelled"] },
+        "bookedByRole": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdByEmail": { "type": "string" },
+        "officeOwnerUid": { "type": "string" },
+        "allowedReaderEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["visitorName", "visitorMobile", "visitorCompany", "visitorEmail", "purpose", "location", "scheduledDateIso", "scheduledTimeLabel", "scheduledAtMillis", "notes", "hostStaffId", "hostShownAs", "hostEmail", "hostCabin", "status", "bookedByRole", "createdByUid", "createdByEmail", "officeOwnerUid", "allowedReaderEmails", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -174,6 +285,22 @@
     "/offices/{officeId}/visitorDob/{dobId}": {
       "schema": { "$ref": "#/entities/VisitorDob" },
       "description": "Write-only date of birth records."
+    },
+    "/offices/{officeId}/prCampaigns/{campaignId}": {
+      "schema": { "$ref": "#/entities/PRCampaign" },
+      "description": "Role-scoped PR campaigns, exhibitions, and press launches."
+    },
+    "/offices/{officeId}/prContacts/{contactId}": {
+      "schema": { "$ref": "#/entities/PRContact" },
+      "description": "Role-scoped media, VIP, and PR partner directory."
+    },
+    "/offices/{officeId}/prGifts/{giftId}": {
+      "schema": { "$ref": "#/entities/PRGift" },
+      "description": "Role-scoped corporate gifting, hampers, and press kit logs."
+    },
+    "/offices/{officeId}/appointments/{appointmentId}": {
+      "schema": { "$ref": "#/entities/Appointment" },
+      "description": "Upcoming host-scoped and reception-visible scheduled appointments."
     }
   }
 }

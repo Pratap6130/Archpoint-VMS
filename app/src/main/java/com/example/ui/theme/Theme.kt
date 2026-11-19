@@ -12,6 +12,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.example.data.model.AppThemeMode
+import com.example.data.model.AvailabilityTone
 
 val LocalIsDarkTheme = compositionLocalOf { true }
 
@@ -19,6 +20,12 @@ data class SemanticStatusColors(
   val freeText: Color,
   val freeContainer: Color,
   val freeOnContainer: Color,
+  val busyText: Color,
+  val busyContainer: Color,
+  val busyOnContainer: Color,
+  val awayText: Color,
+  val awayContainer: Color,
+  val awayOnContainer: Color,
   val meetingText: Color,
   val meetingContainer: Color,
   val meetingOnContainer: Color,
@@ -28,7 +35,21 @@ data class SemanticStatusColors(
   val deniedText: Color,
   val deniedContainer: Color,
   val deniedOnContainer: Color,
-)
+) {
+  fun dotColor(tone: AvailabilityTone): Color =
+    when (tone) {
+      AvailabilityTone.GREEN -> freeText
+      AvailabilityTone.ORANGE -> busyText
+      AvailabilityTone.RED -> awayText
+    }
+
+  fun pillColors(tone: AvailabilityTone): Triple<Color, Color, Color> =
+    when (tone) {
+      AvailabilityTone.GREEN -> Triple(freeText, freeContainer, freeOnContainer)
+      AvailabilityTone.ORANGE -> Triple(busyText, busyContainer, busyOnContainer)
+      AvailabilityTone.RED -> Triple(awayText, awayContainer, awayOnContainer)
+    }
+}
 
 @Composable
 fun archPointStatusColors(): SemanticStatusColors {
@@ -38,6 +59,12 @@ fun archPointStatusColors(): SemanticStatusColors {
       freeText = FreeGreenBright,
       freeContainer = FreeGreenDarkContainer,
       freeOnContainer = FreeGreenOnContainer,
+      busyText = BusyOrangeBright,
+      busyContainer = BusyOrangeDarkContainer,
+      busyOnContainer = BusyOrangeOnContainer,
+      awayText = DeniedRedBright,
+      awayContainer = DeniedRedDarkContainer,
+      awayOnContainer = DeniedRedOnContainer,
       meetingText = MeetingBlueBright,
       meetingContainer = MeetingBlueDarkContainer,
       meetingOnContainer = MeetingBlueOnContainer,
@@ -52,7 +79,13 @@ fun archPointStatusColors(): SemanticStatusColors {
     SemanticStatusColors(
       freeText = FreeGreen,
       freeContainer = FreeGreenSoft,
-      freeOnContainer = FreeGreen,
+      freeOnContainer = FreeGreenOnSoft,
+      busyText = BusyOrange,
+      busyContainer = BusyOrangeSoft,
+      busyOnContainer = BusyOrangeOnSoft,
+      awayText = DeniedRed,
+      awayContainer = DeniedRedSoft,
+      awayOnContainer = DeniedRedOnSoft,
       meetingText = MeetingBlue,
       meetingContainer = MeetingBlueSoft,
       meetingOnContainer = MeetingBlue,
@@ -61,7 +94,7 @@ fun archPointStatusColors(): SemanticStatusColors {
       warningAccent = ArchOrange,
       deniedText = DeniedRed,
       deniedContainer = DeniedRedSoft,
-      deniedOnContainer = DeniedRed,
+      deniedOnContainer = DeniedRedOnSoft,
     )
   }
 }
@@ -78,11 +111,11 @@ private val LightColorScheme = lightColorScheme(
   tertiary = FreeGreen,
   onTertiary = Color.White,
   tertiaryContainer = FreeGreenSoft,
-  onTertiaryContainer = FreeGreen,
+  onTertiaryContainer = FreeGreenOnSoft,
   error = DeniedRed,
   onError = Color.White,
   errorContainer = DeniedRedSoft,
-  onErrorContainer = DeniedRed,
+  onErrorContainer = DeniedRedOnSoft,
   background = CanvasLight,
   onBackground = InkPrimary,
   surface = SurfaceWhite,
@@ -94,7 +127,7 @@ private val LightColorScheme = lightColorScheme(
 )
 
 private val DarkColorScheme = darkColorScheme(
-  primary = PrimaryActionBlue,
+  primary = PrimaryActionBlueDark,
   onPrimary = Color.White,
   primaryContainer = PrimaryContainerDark,
   onPrimaryContainer = PrimaryOnContainerDark,

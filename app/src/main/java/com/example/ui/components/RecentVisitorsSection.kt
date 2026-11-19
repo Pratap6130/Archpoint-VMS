@@ -87,32 +87,33 @@ fun RecentVisitorsStripCard(
 ) {
   if (visitors.isEmpty()) return
 
-  GlassCard(
+  val status = archPointStatusColors()
+  Column(
     modifier = modifier.fillMaxWidth().testTag("recent_visitors_strip_section"),
-    contentPadding = PaddingValues(14.dp),
+    verticalArrangement = Arrangement.spacedBy(6.dp),
   ) {
     Row(
       modifier = Modifier.fillMaxWidth(),
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-      Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
           imageVector = Icons.Rounded.History,
           contentDescription = null,
           tint = MaterialTheme.colorScheme.primary,
-          modifier = Modifier.size(16.dp),
+          modifier = Modifier.size(14.dp),
         )
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(5.dp))
         Text(
-          text = "RECENT VISITORS",
+          text = "RECENT VISITORS (TAP TO FILL)",
           style = MaterialTheme.typography.labelSmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           fontWeight = FontWeight.Bold,
         )
       }
       Text(
-        text = "Tap card to fill",
+        text = "${visitors.size} saved",
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.primary,
         fontWeight = FontWeight.SemiBold,
@@ -121,16 +122,90 @@ fun RecentVisitorsStripCard(
 
     Row(
       modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
       visitors.forEach { profile ->
-        RecentVisitorCardItem(
-          profile = profile,
-          selected = isVisitorSelectedInForm(profile, form),
-          onClick = { onSelectVisitor(profile) },
-          modifier = Modifier.width(236.dp),
-          tagPrefix = "recent_visitor_strip_card",
-        )
+        val selected = isVisitorSelectedInForm(profile, form)
+        val usablePhone =
+          profile.mobile.filter { it.isDigit() }.takeIf { it.isNotBlank() && it != "919999999999" }.orEmpty()
+        val sub =
+          listOfNotNull(
+            profile.company.trim().takeIf { it.isNotBlank() },
+            usablePhone.takeIf { it.isNotBlank() },
+          ).joinToString(" · ")
+        Surface(
+          modifier =
+            Modifier
+              .width(194.dp)
+              .heightIn(min = 48.dp)
+              .clip(RoundedCornerShape(14.dp))
+              .clickable { onSelectVisitor(profile) }
+              .testTag("recent_visitor_strip_card_${recentVisitorTagKey(profile)}"),
+          shape = RoundedCornerShape(14.dp),
+          color =
+            if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.78f)
+            else MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+          border =
+            BorderStroke(
+              width = if (selected) 1.5.dp else 1.dp,
+              color =
+                if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f),
+            ),
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Box(
+              modifier =
+                Modifier
+                  .size(30.dp)
+                  .clip(CircleShape)
+                  .background(
+                    if (selected) status.freeContainer
+                    else MaterialTheme.colorScheme.primaryContainer
+                  ),
+              contentAlignment = Alignment.Center,
+            ) {
+              if (selected) {
+                Icon(
+                  imageVector = Icons.Rounded.CheckCircle,
+                  contentDescription = "Selected",
+                  tint = status.freeText,
+                  modifier = Modifier.size(16.dp),
+                )
+              } else {
+                Text(
+                  text = DeskFormatters.initials(profile.name),
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onPrimaryContainer,
+                  fontWeight = FontWeight.Bold,
+                )
+              }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = profile.name,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+              if (sub.isNotBlank()) {
+                Text(
+                  text = sub,
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                )
+              }
+            }
+          }
+        }
       }
     }
   }

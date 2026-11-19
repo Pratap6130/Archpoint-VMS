@@ -1,7 +1,10 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -17,9 +20,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.Edit
@@ -45,18 +49,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.model.AvailabilityTone
+import com.example.data.model.HostAvailability
 import com.example.data.model.StaffMember
 import com.example.data.model.StaffRole
 import com.example.data.model.VisitReason
+import com.example.data.model.VisitStatus
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassInnerSurface
 import com.example.ui.components.GlassSegmentedControl
 import com.example.ui.components.StaffAvatar
 import com.example.ui.components.StaffEditorBottomSheet
+import com.example.ui.components.StatusDotLabel
 import com.example.ui.components.StatusPill
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.archPointStatusColors
@@ -69,14 +78,19 @@ private enum class AdminSectionTab {
 
 private enum class StaffAccessFilter(val label: String) {
   ALL("All"),
+  HOSTS("Hosts"),
   ADMIN("Admin"),
   RECEPTION("Reception"),
-  HOST("Host"),
+  HOST("Host role"),
   UNASSIGNED("No login"),
 }
 
 private sealed interface StaffSheetState {
-  data object AddNew : StaffSheetState
+  data class AddNew(
+    val defaultRole: StaffRole = StaffRole.HOST,
+    val defaultHostListed: Boolean = true,
+  ) : StaffSheetState
+
   data class Edit(val member: StaffMember) : StaffSheetState
 }
 
@@ -109,6 +123,19 @@ fun AdminScreen(
   var roleFilter by remember { mutableStateOf(StaffAccessFilter.ALL) }
   var compactTab by remember { mutableStateOf(AdminSectionTab.USERS) }
 
+  val hostsOverview =
+    remember(snapshot.staff) {
+      snapshot.staff.filter { it.hostListed || it.parsedRole() == StaffRole.HOST }
+    }
+
+  val inMeetingHostIds =
+    remember(snapshot.visits) {
+      snapshot.visits
+        .filter { it.parsedStatus() == VisitStatus.IN_MEETING }
+        .map { it.hostStaffId }
+        .toSet()
+    }
+
   val filteredStaff =
     remember(snapshot.staff, staffQuery, roleFilter) {
       val q = staffQuery.trim().lowercase()
@@ -116,6 +143,7 @@ fun AdminScreen(
         val matchesRole =
           when (roleFilter) {
             StaffAccessFilter.ALL -> true
+            StaffAccessFilter.HOSTS -> member.hostListed || member.parsedRole() == StaffRole.HOST
             StaffAccessFilter.ADMIN -> member.parsedRole() == StaffRole.ADMIN
             StaffAccessFilter.RECEPTION -> member.parsedRole() == StaffRole.RECEPTION
             StaffAccessFilter.HOST -> member.parsedRole() == StaffRole.HOST
@@ -127,6 +155,7 @@ fun AdminScreen(
             member.shownAs.lowercase().contains(q) ||
             member.designation.lowercase().contains(q) ||
             member.department.lowercase().contains(q) ||
+            member.cabin.lowercase().contains(q) ||
             member.email.lowercase().contains(q)
         matchesRole && matchesQuery
       }
@@ -142,13 +171,15 @@ fun AdminScreen(
     }
 
   when (val activeSheet = sheetState) {
-    StaffSheetState.AddNew ->
+    is StaffSheetState.AddNew ->
       StaffEditorBottomSheet(
         existingMember = null,
         isBusy = isBusy,
         onDismiss = { sheetState = null },
         onCreateUser = onAddStaff,
         onSaveUser = onSaveStaff,
+        defaultRole = activeSheet.defaultRole,
+        defaultHostListed = activeSheet.defaultHostListed,
       )
 
     is StaffSheetState.Edit ->
@@ -180,13 +211,22 @@ fun AdminScreen(
           item(key = "admin_users_header") {
             AdminUsersHeaderCard(
               totalUsers = snapshot.staff.size,
+              hostCount = hostsOverview.size,
               activeLogins = activeLoginCount,
               adminCount = adminCount,
+              hostsOverview = hostsOverview,
+              inMeetingHostIds = inMeetingHostIds,
               searchQuery = staffQuery,
               roleFilter = roleFilter,
               onSearchChange = { staffQuery = it },
               onRoleFilterSelect = { roleFilter = it },
-              onAddUserClick = { sheetState = StaffSheetState.AddNew },
+              onAddHostClick = {
+                sheetState = StaffSheetState.AddNew(defaultRole = StaffRole.HOST, defaultHostListed = true)
+              },
+              onAddUserClick = {
+                sheetState = StaffSheetState.AddNew(defaultRole = StaffRole.RECEPTION, defaultHostListed = false)
+              },
+              onEditHostClick = { host -> sheetState = StaffSheetState.Edit(host) },
             )
           }
           if (filteredStaff.isEmpty()) {
@@ -200,6 +240,7 @@ fun AdminScreen(
             ) { member ->
               StaffSummaryRowCard(
                 member = member,
+                inMeeting = member.id in inMeetingHostIds,
                 onEditClick = { sheetState = StaffSheetState.Edit(member) },
               )
             }
@@ -237,7 +278,7 @@ fun AdminScreen(
           GlassSegmentedControl(
             options =
               listOf(
-                AdminSectionTab.USERS to "Users (${snapshot.staff.size})",
+                AdminSectionTab.USERS to "Team (${snapshot.staff.size})",
                 AdminSectionTab.WORKSPACE to "Reasons & Sync",
               ),
             selected = compactTab,
@@ -250,13 +291,22 @@ fun AdminScreen(
           item(key = "admin_users_header") {
             AdminUsersHeaderCard(
               totalUsers = snapshot.staff.size,
+              hostCount = hostsOverview.size,
               activeLogins = activeLoginCount,
               adminCount = adminCount,
+              hostsOverview = hostsOverview,
+              inMeetingHostIds = inMeetingHostIds,
               searchQuery = staffQuery,
               roleFilter = roleFilter,
               onSearchChange = { staffQuery = it },
               onRoleFilterSelect = { roleFilter = it },
-              onAddUserClick = { sheetState = StaffSheetState.AddNew },
+              onAddHostClick = {
+                sheetState = StaffSheetState.AddNew(defaultRole = StaffRole.HOST, defaultHostListed = true)
+              },
+              onAddUserClick = {
+                sheetState = StaffSheetState.AddNew(defaultRole = StaffRole.RECEPTION, defaultHostListed = false)
+              },
+              onEditHostClick = { host -> sheetState = StaffSheetState.Edit(host) },
             )
           }
 
@@ -271,6 +321,7 @@ fun AdminScreen(
             ) { member ->
               StaffSummaryRowCard(
                 member = member,
+                inMeeting = member.id in inMeetingHostIds,
                 onEditClick = { sheetState = StaffSheetState.Edit(member) },
               )
             }
@@ -303,22 +354,28 @@ fun AdminScreen(
 @Composable
 private fun AdminUsersHeaderCard(
   totalUsers: Int,
+  hostCount: Int,
   activeLogins: Int,
   adminCount: Int,
+  hostsOverview: List<StaffMember>,
+  inMeetingHostIds: Set<String>,
   searchQuery: String,
   roleFilter: StaffAccessFilter,
   onSearchChange: (String) -> Unit,
   onRoleFilterSelect: (StaffAccessFilter) -> Unit,
+  onAddHostClick: () -> Unit,
   onAddUserClick: () -> Unit,
+  onEditHostClick: (StaffMember) -> Unit,
 ) {
+  val status = archPointStatusColors()
   GlassCard(contentPadding = PaddingValues(16.dp)) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-      Column(modifier = Modifier.weight(1f)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
           Icon(
             imageVector = Icons.Rounded.Shield,
             contentDescription = null,
@@ -326,29 +383,46 @@ private fun AdminUsersHeaderCard(
             modifier = Modifier.size(18.dp),
           )
           Spacer(Modifier.width(6.dp))
-          Text("Team & Portal Access", style = MaterialTheme.typography.titleLarge)
+          Text("Hosts & Portal Access", style = MaterialTheme.typography.titleLarge)
         }
-        Text(
-          text = "Only assigned emails can sign in. Each host sees only their own visits and clients.",
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
       }
-      Spacer(Modifier.width(10.dp))
-      Button(
-        onClick = onAddUserClick,
-        shape = RoundedCornerShape(12.dp),
-        colors =
-          ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
-          ),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-        modifier = Modifier.heightIn(min = 48.dp).testTag("admin_add_user_button"),
+      Text(
+        text = "Only assigned emails can sign in. Each host sees only their own visits and clients.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+
+      // Top quick Add Host + Add User buttons
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        Icon(Icons.Rounded.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(6.dp))
-        Text("Add user", style = MaterialTheme.typography.labelLarge)
+        Button(
+          onClick = onAddHostClick,
+          shape = RoundedCornerShape(12.dp),
+          colors =
+            ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.primary,
+              contentColor = MaterialTheme.colorScheme.onPrimary,
+            ),
+          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+          modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("admin_add_host_button"),
+        ) {
+          Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+          Spacer(Modifier.width(6.dp))
+          Text("Add host", style = MaterialTheme.typography.labelLarge)
+        }
+
+        OutlinedButton(
+          onClick = onAddUserClick,
+          shape = RoundedCornerShape(12.dp),
+          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+          modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("admin_add_user_button"),
+        ) {
+          Icon(Icons.Rounded.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+          Spacer(Modifier.width(6.dp))
+          Text("Add user", style = MaterialTheme.typography.labelLarge)
+        }
       }
     }
 
@@ -356,15 +430,96 @@ private fun AdminUsersHeaderCard(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-      AdminStatBadge(value = totalUsers.toString(), label = "staff", modifier = Modifier.weight(1f))
-      AdminStatBadge(value = activeLogins.toString(), label = "portal logins", modifier = Modifier.weight(1f))
-      AdminStatBadge(value = adminCount.toString(), label = "admins", modifier = Modifier.weight(1f))
+      AdminStatBadge(value = hostCount.toString(), label = "hosts", modifier = Modifier.weight(1f))
+      AdminStatBadge(value = activeLogins.toString(), label = "logins", modifier = Modifier.weight(1f))
+      AdminStatBadge(value = "$adminCount/$totalUsers", label = "admins", modifier = Modifier.weight(1f))
+    }
+
+    // Top Quick-Edit Strip for All Hosts
+    if (hostsOverview.isNotEmpty()) {
+      Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+          text = "HOSTS AT A GLANCE · TAP TO EDIT",
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+          modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          hostsOverview.forEach { host ->
+            val inMeeting = host.id in inMeetingHostIds
+            val tone = HostAvailability.resolveTone(host.parsedAvailability(), inMeeting)
+            val toneDot = status.dotColor(tone)
+            val displayName = host.shownAs.ifBlank { host.fullName }
+            GlassInnerSurface(
+              shape = RoundedCornerShape(14.dp),
+              borderColor = toneDot.copy(alpha = 0.45f),
+              modifier =
+                Modifier
+                  .width(164.dp)
+                  .clip(RoundedCornerShape(14.dp))
+                  .clickable { onEditHostClick(host) }
+                  .testTag("admin_host_quick_card_${host.id}"),
+            ) {
+              Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                Box {
+                  StaffAvatar(
+                    name = displayName,
+                    photoUrl = host.photoUrl,
+                    size = 34.dp,
+                    textStyle = MaterialTheme.typography.labelSmall,
+                  )
+                  Box(
+                    modifier =
+                      Modifier
+                        .size(10.dp)
+                        .align(Alignment.BottomEnd)
+                        .clip(CircleShape)
+                        .background(toneDot)
+                  )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    text = displayName,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                  val sub =
+                    host.cabin.takeIf { it.isNotBlank() }
+                      ?: host.designation.takeIf { it.isNotBlank() }
+                      ?: host.parsedAvailability().receptionLabel
+                  Text(
+                    text = sub,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                }
+                Icon(
+                  imageVector = Icons.Rounded.Edit,
+                  contentDescription = "Edit $displayName",
+                  tint = MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.size(14.dp),
+                )
+              }
+            }
+          }
+        }
+      }
     }
 
     OutlinedTextField(
       value = searchQuery,
       onValueChange = onSearchChange,
-      placeholder = { Text("Search name or designation...") },
+      placeholder = { Text("Search name, cabin, or designation...") },
       leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = "Search staff", modifier = Modifier.size(18.dp)) },
       trailingIcon = {
         if (searchQuery.isNotEmpty()) {
@@ -423,12 +578,16 @@ private fun AdminStatBadge(
 @Composable
 private fun StaffSummaryRowCard(
   member: StaffMember,
+  inMeeting: Boolean,
   onEditClick: () -> Unit,
 ) {
   val status = archPointStatusColors()
   val displayName = member.fullName.ifBlank { member.shownAs }
   val designationLabel =
     member.designation.trim().ifBlank { member.parsedRole().label }
+  val avail = member.parsedAvailability()
+  val tone = HostAvailability.resolveTone(avail, inMeeting)
+  val dotLabel = if (inMeeting) "In meeting" else avail.receptionLabel
 
   GlassInnerSurface(
     shape = RoundedCornerShape(16.dp),
@@ -465,6 +624,9 @@ private fun StaffSummaryRowCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
           )
+          if (member.hostListed && member.activeAccount) {
+            StatusDotLabel(tone = tone, text = dotLabel)
+          }
         }
       }
 

@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -12,65 +15,81 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.Chair
 import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.model.AppThemeMode
 import com.example.data.model.ArchPointSeedData
+import com.example.data.model.AvailabilityTone
+import com.example.data.model.HostAvailability
 import com.example.data.model.StaffMember
 import com.example.data.model.StaffRole
 import com.example.data.model.VisitStatus
-import com.example.ui.components.FreeDotLabel
 import com.example.ui.components.GlassCard
 import com.example.ui.components.GlassInnerSurface
 import com.example.ui.components.GlassSegmentedControl
 import com.example.ui.components.LocationPresetScrollBar
 import com.example.ui.components.StaffAvatar
+import com.example.ui.components.StatusDotLabel
 import com.example.ui.components.StatusPill
 import com.example.ui.components.matchesLocationText
 import com.example.ui.components.matchesSeating
 import com.example.ui.theme.archPointStatusColors
 import com.example.ui.viewmodel.DeskSnapshot
-import com.example.util.DeskFormatters
+import com.example.util.StaffPhotoCodec
+import kotlinx.coroutines.launch
 
 @Composable
 fun ProfileScreen(
@@ -81,13 +100,19 @@ fun ProfileScreen(
   backgroundServiceRunning: Boolean,
   isBusy: Boolean,
   onSelectTheme: (AppThemeMode) -> Unit,
-  onSaveOwnSeating: (
+  onSaveOwnProfile: (
+    fullName: String,
+    shownAs: String,
+    designation: String,
+    department: String,
+    photoUrl: String,
     floor: String,
     cabin: String,
     otherLocation: String,
     requiredThings: String,
     notes: String,
   ) -> Unit,
+  onOpenSettings: () -> Unit,
   onTurnOnAlerts: () -> Unit,
   onToggleBackgroundAlerts: (Boolean) -> Unit,
   onOpenBatterySettings: () -> Unit,
@@ -118,7 +143,8 @@ fun ProfileScreen(
             officeName = snapshot.office?.name.orEmpty(),
             userEmail = userEmail,
             isBusy = isBusy,
-            onSaveOwnSeating = onSaveOwnSeating,
+            onOpenSettings = onOpenSettings,
+            onSaveOwnProfile = onSaveOwnProfile,
           )
           AppearanceAndAlertsCard(
             themeMode = themeMode,
@@ -153,7 +179,8 @@ fun ProfileScreen(
           officeName = snapshot.office?.name.orEmpty(),
           userEmail = userEmail,
           isBusy = isBusy,
-          onSaveOwnSeating = onSaveOwnSeating,
+          onOpenSettings = onOpenSettings,
+          onSaveOwnProfile = onSaveOwnProfile,
         )
         AppearanceAndAlertsCard(
           themeMode = themeMode,
@@ -183,7 +210,13 @@ private fun MyProfileSeatingCard(
   officeName: String,
   userEmail: String,
   isBusy: Boolean,
-  onSaveOwnSeating: (
+  onOpenSettings: () -> Unit,
+  onSaveOwnProfile: (
+    fullName: String,
+    shownAs: String,
+    designation: String,
+    department: String,
+    photoUrl: String,
     floor: String,
     cabin: String,
     otherLocation: String,
@@ -191,7 +224,25 @@ private fun MyProfileSeatingCard(
     notes: String,
   ) -> Unit,
 ) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
   val status = archPointStatusColors()
+
+  var fullName by remember(member?.id, member?.fullName) {
+    mutableStateOf(member?.fullName.orEmpty())
+  }
+  var shownAs by remember(member?.id, member?.shownAs) {
+    mutableStateOf(member?.shownAs.orEmpty())
+  }
+  var designation by remember(member?.id, member?.designation) {
+    mutableStateOf(member?.designation.orEmpty())
+  }
+  var department by remember(member?.id, member?.department) {
+    mutableStateOf(member?.department.orEmpty())
+  }
+  var photoUrl by remember(member?.id, member?.photoUrl) {
+    mutableStateOf(member?.photoUrl.orEmpty())
+  }
   var floor by remember(member?.id, member?.floor) { mutableStateOf(member?.floor.orEmpty()) }
   var cabin by remember(member?.id, member?.cabin) { mutableStateOf(member?.cabin.orEmpty()) }
   var otherLocation by remember(member?.id, member?.otherLocation) {
@@ -202,10 +253,36 @@ private fun MyProfileSeatingCard(
   }
   var notes by remember(member?.id, member?.notes) { mutableStateOf(member?.notes.orEmpty()) }
 
-  val displayName = member?.fullName?.ifBlank { member.shownAs } ?: userEmail.substringBefore("@")
+  var isEncodingPhoto by remember { mutableStateOf(false) }
+  var photoError by remember { mutableStateOf<String?>(null) }
+
+  val photoPickerLauncher =
+    rememberLauncherForActivityResult(
+      contract = ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+      if (uri != null) {
+        isEncodingPhoto = true
+        photoError = null
+        scope.launch {
+          val encoded = StaffPhotoCodec.encodePickedPhotoToDataUri(context, uri)
+          isEncodingPhoto = false
+          encoded
+            .onSuccess { dataUri -> photoUrl = dataUri }
+            .onFailure { err -> photoError = err.localizedMessage ?: "Failed to load image" }
+        }
+      }
+    }
+
+  val displayName = fullName.trim().ifBlank { member?.shownAs ?: userEmail.substringBefore("@") }
   val hasChanges =
     member != null &&
-      (floor.trim() != member.floor ||
+      fullName.trim().isNotEmpty() &&
+      (fullName.trim() != member.fullName ||
+        shownAs.trim() != member.shownAs ||
+        designation.trim() != member.designation ||
+        department.trim() != member.department ||
+        photoUrl.trim() != member.photoUrl ||
+        floor.trim() != member.floor ||
         cabin.trim() != member.cabin ||
         otherLocation.trim() != member.otherLocation ||
         requiredThings.trim() != member.requiredThings ||
@@ -219,18 +296,23 @@ private fun MyProfileSeatingCard(
     ) {
       Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
         StaffAvatar(
-          name = displayName,
-          photoUrl = member?.photoUrl.orEmpty(),
-          size = 50.dp,
+          name = shownAs.ifBlank { displayName },
+          photoUrl = photoUrl,
+          size = 56.dp,
           textStyle = MaterialTheme.typography.titleMedium,
         )
         Spacer(Modifier.width(12.dp))
         Column {
-          Text(displayName, style = MaterialTheme.typography.titleLarge)
+          Text(
+            text = displayName,
+            style = MaterialTheme.typography.titleLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
           val roleDept =
             listOfNotNull(
-              member?.designation?.takeIf { it.isNotBlank() },
-              member?.department?.takeIf { it.isNotBlank() },
+              designation.trim().takeIf { it.isNotBlank() },
+              department.trim().takeIf { it.isNotBlank() },
             ).joinToString(" · ")
           if (roleDept.isNotBlank()) {
             Text(
@@ -258,13 +340,128 @@ private fun MyProfileSeatingCard(
         }
       }
 
-      if (member != null) {
-        StatusPill(
-          text = member.parsedRole().label,
-          containerColor = MaterialTheme.colorScheme.primaryContainer,
-          contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-        )
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+      ) {
+        if (member != null) {
+          StatusPill(
+            text = member.parsedRole().label,
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+          )
+        }
+        OutlinedButton(
+          onClick = onOpenSettings,
+          shape = RoundedCornerShape(10.dp),
+          contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+          modifier = Modifier.heightIn(min = 40.dp).testTag("profile_settings_button"),
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.Settings,
+            contentDescription = "Open Settings",
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(Modifier.width(4.dp))
+          Text("Settings", style = MaterialTheme.typography.labelSmall)
+        }
       }
+    }
+
+    // Photo controls
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      OutlinedButton(
+        onClick = {
+          photoPickerLauncher.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+          )
+        },
+        enabled = !isBusy && !isEncodingPhoto && member != null,
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        modifier = Modifier.heightIn(min = 42.dp).testTag("profile_upload_photo_button"),
+      ) {
+        if (isEncodingPhoto) {
+          CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+          Spacer(Modifier.width(6.dp))
+          Text("Processing...", style = MaterialTheme.typography.labelMedium)
+        } else {
+          Icon(Icons.Rounded.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
+          Spacer(Modifier.width(6.dp))
+          Text(
+            text = if (photoUrl.isBlank()) "Upload profile photo" else "Change photo",
+            style = MaterialTheme.typography.labelMedium,
+          )
+        }
+      }
+      if (photoUrl.isNotBlank() && !isEncodingPhoto && member != null) {
+        IconButton(
+          onClick = { photoUrl = "" },
+          modifier = Modifier.size(40.dp).testTag("profile_remove_photo_button"),
+        ) {
+          Icon(
+            Icons.Rounded.DeleteOutline,
+            contentDescription = "Remove profile photo",
+            tint = MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(18.dp),
+          )
+        }
+      }
+    }
+    if (photoError != null) {
+      Text(
+        text = photoError.orEmpty(),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.error,
+      )
+    }
+
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+    Text("My profile & designation", style = MaterialTheme.typography.titleSmall)
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      OutlinedTextField(
+        value = fullName,
+        onValueChange = { fullName = it },
+        label = { Text("Full name") },
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+        singleLine = true,
+        modifier = Modifier.weight(1f).testTag("my_full_name_input"),
+      )
+      OutlinedTextField(
+        value = shownAs,
+        onValueChange = { shownAs = it },
+        label = { Text("Shown as") },
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+        singleLine = true,
+        modifier = Modifier.weight(1f).testTag("my_shown_as_input"),
+      )
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      OutlinedTextField(
+        value = designation,
+        onValueChange = { designation = it },
+        label = { Text("Designation") },
+        placeholder = { Text("e.g. Architect") },
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+        singleLine = true,
+        modifier = Modifier.weight(1f).testTag("my_designation_input"),
+      )
+      OutlinedTextField(
+        value = department,
+        onValueChange = { department = it },
+        label = { Text("Department") },
+        placeholder = { Text("e.g. Design, Front Desk") },
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+        singleLine = true,
+        modifier = Modifier.weight(1f).testTag("my_department_input"),
+      )
     }
 
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
@@ -408,16 +605,102 @@ private fun MyProfileSeatingCard(
           contentColor = if (member.hostListed) status.freeOnContainer else MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Button(
-          onClick = { onSaveOwnSeating(floor, cabin, otherLocation, requiredThings, notes) },
-          enabled = !isBusy && hasChanges,
+          onClick = {
+            onSaveOwnProfile(
+              fullName,
+              shownAs,
+              designation,
+              department,
+              photoUrl,
+              floor,
+              cabin,
+              otherLocation,
+              requiredThings,
+              notes,
+            )
+          },
+          enabled = !isBusy && !isEncodingPhoto && hasChanges,
           shape = RoundedCornerShape(12.dp),
-          modifier = Modifier.height(44.dp).testTag("save_my_seating_button"),
+          modifier = Modifier.height(46.dp).testTag("save_my_seating_button"),
         ) {
           Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(16.dp))
           Spacer(Modifier.width(6.dp))
-          Text("Save")
+          Text("Save profile")
         }
       }
+    }
+  }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AppSettingsBottomSheet(
+  themeMode: AppThemeMode,
+  notificationsEnabled: Boolean,
+  backgroundServiceRunning: Boolean,
+  userEmail: String,
+  roleLabel: String,
+  onDismiss: () -> Unit,
+  onSelectTheme: (AppThemeMode) -> Unit,
+  onTurnOnAlerts: () -> Unit,
+  onToggleBackgroundAlerts: (Boolean) -> Unit,
+  onOpenBatterySettings: () -> Unit,
+  onSendTestAlert: () -> Unit,
+  onSignOut: () -> Unit,
+) {
+  val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+  ModalBottomSheet(
+    onDismissRequest = onDismiss,
+    sheetState = sheetState,
+  ) {
+    Column(
+      modifier =
+        Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
+          .padding(horizontal = 20.dp)
+          .padding(bottom = 24.dp)
+          .navigationBarsPadding(),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Column {
+          Text(
+            text = "App Settings",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+          )
+          Text(
+            text = "$userEmail · $roleLabel",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+        StatusPill(
+          text = roleLabel,
+          containerColor = MaterialTheme.colorScheme.primaryContainer,
+          contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        )
+      }
+
+      AppearanceAndAlertsContent(
+        themeMode = themeMode,
+        notificationsEnabled = notificationsEnabled,
+        backgroundServiceRunning = backgroundServiceRunning,
+        onSelectTheme = onSelectTheme,
+        onTurnOnAlerts = onTurnOnAlerts,
+        onToggleBackgroundAlerts = onToggleBackgroundAlerts,
+        onOpenBatterySettings = onOpenBatterySettings,
+        onSendTestAlert = onSendTestAlert,
+        onSignOut = {
+          onDismiss()
+          onSignOut()
+        },
+      )
     }
   }
 }
@@ -434,7 +717,6 @@ private fun AppearanceAndAlertsCard(
   onSendTestAlert: () -> Unit,
   onSignOut: () -> Unit,
 ) {
-  val status = archPointStatusColors()
   GlassCard {
     Row(verticalAlignment = Alignment.CenterVertically) {
       Icon(
@@ -444,11 +726,39 @@ private fun AppearanceAndAlertsCard(
         modifier = Modifier.size(20.dp),
       )
       Spacer(Modifier.width(8.dp))
-      Text("Theme & alerts", style = MaterialTheme.typography.titleMedium)
+      Text("Theme, Alerts & Account", style = MaterialTheme.typography.titleMedium)
     }
 
+    AppearanceAndAlertsContent(
+      themeMode = themeMode,
+      notificationsEnabled = notificationsEnabled,
+      backgroundServiceRunning = backgroundServiceRunning,
+      onSelectTheme = onSelectTheme,
+      onTurnOnAlerts = onTurnOnAlerts,
+      onToggleBackgroundAlerts = onToggleBackgroundAlerts,
+      onOpenBatterySettings = onOpenBatterySettings,
+      onSendTestAlert = onSendTestAlert,
+      onSignOut = onSignOut,
+    )
+  }
+}
+
+@Composable
+private fun AppearanceAndAlertsContent(
+  themeMode: AppThemeMode,
+  notificationsEnabled: Boolean,
+  backgroundServiceRunning: Boolean,
+  onSelectTheme: (AppThemeMode) -> Unit,
+  onTurnOnAlerts: () -> Unit,
+  onToggleBackgroundAlerts: (Boolean) -> Unit,
+  onOpenBatterySettings: () -> Unit,
+  onSendTestAlert: () -> Unit,
+  onSignOut: () -> Unit,
+) {
+  val status = archPointStatusColors()
+  Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
     Text(
-      "Choose Light or Dark glass theme",
+      "Choose Light, Dark, or System glass theme",
       style = MaterialTheme.typography.bodySmall,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -593,7 +903,7 @@ private fun HostAccessBoundaryCard(member: StaffMember?) {
     }
     Text(
       text =
-        "Your account is signed in with Host permissions (${member?.shownAs ?: "Host"}). You can manage your own availability status, seating, alert settings, and visitor notifications in My desk.",
+        "Your account is signed in with Host permissions (${member?.shownAs ?: "Host"}). You can edit your own profile photo, name, designation, seating, alert settings, and visitor notifications in My desk.",
       style = MaterialTheme.typography.bodySmall,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -669,6 +979,8 @@ private fun MembersDirectoryCard(snapshot: DeskSnapshot) {
           snapshot.visits.count {
             it.hostStaffId == member.id && it.parsedStatus() == VisitStatus.WAITING
           }
+        val avail = member.parsedAvailability()
+        val tone = HostAvailability.resolveTone(avail, inMeeting = inMeetingVisit != null)
 
         GlassInnerSurface(modifier = Modifier.fillMaxWidth()) {
           Column(
@@ -724,11 +1036,15 @@ private fun MembersDirectoryCard(snapshot: DeskSnapshot) {
 
             if (member.activeAccount && member.hostListed) {
               if (inMeetingVisit != null) {
-                FreeDotLabel(isFree = false, text = "In a meeting with ${inMeetingVisit.visitorName}")
+                StatusDotLabel(
+                  tone = AvailabilityTone.ORANGE,
+                  text = "In meeting with ${inMeetingVisit.visitorName}",
+                )
               } else {
-                FreeDotLabel(
-                  isFree = true,
-                  text = if (waitingCount > 0) "Free · $waitingCount waiting" else "Free · Visitors can ask",
+                val baseText = avail.receptionLabel
+                StatusDotLabel(
+                  tone = tone,
+                  text = if (waitingCount > 0) "$baseText · $waitingCount waiting" else "$baseText · Visitors can ask",
                 )
               }
             }

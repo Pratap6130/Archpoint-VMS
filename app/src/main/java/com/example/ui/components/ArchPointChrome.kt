@@ -27,16 +27,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AdminPanelSettings
 import androidx.compose.material.icons.outlined.Badge
+import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.PeopleOutline
 import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.Badge
+import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.People
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -68,6 +71,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.model.AppTab
+import com.example.data.model.AvailabilityTone
 import com.example.data.model.StaffRole
 import com.example.ui.theme.ArchAmber
 import com.example.ui.theme.ArchAmberBorderDark
@@ -286,6 +290,7 @@ fun ArchPointHeaderBar(
   role: StaffRole,
   officeName: String,
   onOpenProfile: () -> Unit,
+  onOpenSettings: (() -> Unit)? = null,
 ) {
   val isDark = LocalIsDarkTheme.current
   val headerBg = if (isDark) HeaderDark else LightGlassHeader
@@ -301,7 +306,7 @@ fun ArchPointHeaderBar(
       modifier =
         Modifier.fillMaxWidth()
           .statusBarsPadding()
-          .padding(horizontal = 16.dp, vertical = 10.dp),
+          .padding(horizontal = 14.dp, vertical = 10.dp),
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.SpaceBetween,
     ) {
@@ -309,16 +314,20 @@ fun ArchPointHeaderBar(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.weight(1f),
       ) {
-        Image(
-          painter =
-            painterResource(
-              id = if (isDark) R.drawable.img_archpoint_logo_dark else R.drawable.img_archpoint_logo
-            ),
-          contentDescription = "ArchPoint logo",
-          modifier = Modifier.width(96.dp).height(34.dp),
-          contentScale = ContentScale.Fit,
-        )
-        Spacer(Modifier.width(12.dp))
+        Surface(
+          shape = RoundedCornerShape(10.dp),
+          color = Color.White,
+          border = BorderStroke(1.dp, rimColor),
+          modifier = Modifier.size(38.dp),
+        ) {
+          Image(
+            painter = painterResource(id = R.drawable.img_archpoint_mark),
+            contentDescription = "ArchPoint logo mark",
+            modifier = Modifier.fillMaxSize().padding(3.dp),
+            contentScale = ContentScale.Fit,
+          )
+        }
+        Spacer(Modifier.width(10.dp))
         Column {
           Text(
             text = officeName.ifBlank { stringResource(R.string.app_name) },
@@ -337,31 +346,58 @@ fun ArchPointHeaderBar(
         }
       }
 
-      Surface(
-        modifier =
-          Modifier.clip(RoundedCornerShape(20.dp))
-            .clickable(onClick = onOpenProfile)
-            .testTag("header_profile_pill"),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-          verticalAlignment = Alignment.CenterVertically,
+        if (onOpenSettings != null) {
+          Surface(
+            modifier =
+              Modifier.size(40.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onOpenSettings)
+                .testTag("header_settings_button"),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = Icons.Rounded.Settings,
+                contentDescription = "App Settings",
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(19.dp),
+              )
+            }
+          }
+        }
+
+        Surface(
+          modifier =
+            Modifier.clip(RoundedCornerShape(20.dp))
+              .clickable(onClick = onOpenProfile)
+              .testTag("header_profile_pill"),
+          shape = RoundedCornerShape(20.dp),
+          color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
+          border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
         ) {
-          Icon(
-            imageVector = Icons.Rounded.Person,
-            contentDescription = "Open Profile and Settings",
-            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier.size(16.dp),
-          )
-          Spacer(Modifier.width(5.dp))
-          Text(
-            text = "Profile",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
-          )
+          Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.Person,
+              contentDescription = "Open Profile and Settings",
+              tint = MaterialTheme.colorScheme.onPrimaryContainer,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(5.dp))
+            Text(
+              text = "Profile",
+              style = MaterialTheme.typography.labelMedium,
+              color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+          }
         }
       }
     }
@@ -503,6 +539,7 @@ private fun TabIconWithBadge(tab: AppTab, selected: Boolean, myWaitingCount: Int
       AppTab.RECEPTION -> if (selected) Icons.Rounded.Badge else Icons.Outlined.Badge
       AppTab.MY_VISITORS -> if (selected) Icons.Rounded.People else Icons.Outlined.PeopleOutline
       AppTab.VISITOR_LOG -> if (selected) Icons.Rounded.History else Icons.Outlined.History
+      AppTab.PR -> if (selected) Icons.Rounded.Campaign else Icons.Outlined.Campaign
       AppTab.ADMIN -> if (selected) Icons.Rounded.AdminPanelSettings else Icons.Outlined.AdminPanelSettings
       AppTab.PROFILE -> if (selected) Icons.Rounded.Person else Icons.Outlined.PersonOutline
     }
@@ -531,6 +568,7 @@ fun tabTitle(tab: AppTab): String =
     AppTab.RECEPTION -> stringResource(R.string.tab_reception)
     AppTab.MY_VISITORS -> stringResource(R.string.tab_my_visitors)
     AppTab.VISITOR_LOG -> stringResource(R.string.tab_visitor_log)
+    AppTab.PR -> stringResource(R.string.tab_pr)
     AppTab.ADMIN -> stringResource(R.string.tab_admin)
     AppTab.PROFILE -> stringResource(R.string.tab_profile)
   }
@@ -557,9 +595,9 @@ fun StatusPill(
 }
 
 @Composable
-fun FreeDotLabel(isFree: Boolean, text: String) {
+fun StatusDotLabel(tone: AvailabilityTone, text: String) {
   val status = archPointStatusColors()
-  val accent = if (isFree) status.freeText else status.meetingText
+  val accent = status.dotColor(tone)
   Row(verticalAlignment = Alignment.CenterVertically) {
     Box(
       modifier =
@@ -575,4 +613,12 @@ fun FreeDotLabel(isFree: Boolean, text: String) {
       fontWeight = FontWeight.SemiBold,
     )
   }
+}
+
+@Composable
+fun FreeDotLabel(isFree: Boolean, text: String) {
+  StatusDotLabel(
+    tone = if (isFree) AvailabilityTone.GREEN else AvailabilityTone.ORANGE,
+    text = text,
+  )
 }

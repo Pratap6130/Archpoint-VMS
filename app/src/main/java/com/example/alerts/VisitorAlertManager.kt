@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
@@ -152,6 +153,11 @@ object VisitorAlertManager {
     }
   }
 
+  private fun archPointLargeIcon(context: Context) =
+    runCatching {
+      BitmapFactory.decodeResource(context.resources, R.drawable.img_archpoint_mark)
+    }.getOrNull()
+
   fun sendTestAlert(context: Context) {
     ensureChannels(context)
     if (!hasNotificationPermission(context)) return
@@ -159,6 +165,7 @@ object VisitorAlertManager {
     val notification =
       NotificationCompat.Builder(context, CHANNEL_ALERTS)
         .setSmallIcon(R.drawable.ic_stat_archpoint)
+        .apply { archPointLargeIcon(context)?.let { setLargeIcon(it) } }
         .setContentTitle("Alerts are working")
         .setContentText("You will hear high-priority visitor alerts even when locked.")
         .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -224,6 +231,7 @@ object VisitorAlertManager {
     val notification =
       NotificationCompat.Builder(context, CHANNEL_ALERTS)
         .setSmallIcon(R.drawable.ic_stat_archpoint)
+        .apply { archPointLargeIcon(context)?.let { setLargeIcon(it) } }
         .setContentTitle(title)
         .setContentText(body)
         .setStyle(NotificationCompat.BigTextStyle().bigText(body))
@@ -255,6 +263,7 @@ object VisitorAlertManager {
     val notification =
       NotificationCompat.Builder(context, CHANNEL_ALERTS)
         .setSmallIcon(R.drawable.ic_stat_archpoint)
+        .apply { archPointLargeIcon(context)?.let { setLargeIcon(it) } }
         .setContentTitle(title)
         .setContentText(body)
         .setPriority(NotificationCompat.PRIORITY_HIGH)

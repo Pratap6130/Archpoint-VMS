@@ -13,9 +13,21 @@ import com.example.alerts.VisitorAlertManager
 import com.example.data.ai.ScannedVisitorCard
 import com.example.data.ai.VisitorCardScanner
 import com.example.data.model.AppTab
+import com.example.data.model.Appointment
+import com.example.data.model.AppointmentStatus
+import com.example.data.model.AvailabilityTone
 import com.example.data.model.HostAvailability
 import com.example.data.model.Office
 import com.example.data.model.OfficeMembership
+import com.example.data.model.PRCampaign
+import com.example.data.model.PRCampaignStatus
+import com.example.data.model.PRChannel
+import com.example.data.model.PRContact
+import com.example.data.model.PRContactTier
+import com.example.data.model.PRFollowUpStatus
+import com.example.data.model.PRGift
+import com.example.data.model.PRGiftDirection
+import com.example.data.model.PRGiftStatus
 import com.example.data.model.StaffMember
 import com.example.data.model.StaffRole
 import com.example.data.model.UiState
@@ -91,6 +103,15 @@ data class VisitorSearchState(
   val errorMessage: String? = null,
 )
 
+data class PRMetrics(
+  val activeCampaigns: Int = 0,
+  val liveCampaigns: Int = 0,
+  val totalContacts: Int = 0,
+  val dueFollowUps: Int = 0,
+  val pendingGifts: Int = 0,
+  val upcomingBirthdays: Int = 0,
+)
+
 data class DeskSnapshot(
   val office: Office?,
   val staff: List<StaffMember>,
@@ -100,6 +121,10 @@ data class DeskSnapshot(
   val currentStaff: StaffMember?,
   val activeRole: StaffRole,
   val isDeactivated: Boolean,
+  val prCampaigns: List<PRCampaign> = emptyList(),
+  val prContacts: List<PRContact> = emptyList(),
+  val prGifts: List<PRGift> = emptyList(),
+  val appointments: List<Appointment> = emptyList(),
 )
 
 sealed interface CardScanState {
@@ -231,6 +256,13 @@ class MainViewModel(
     val profilesSt: UiState<List<VisitorProfile>>,
   )
 
+  private data class PrAndApptStates(
+    val campaignsSt: UiState<List<PRCampaign>>,
+    val contactsSt: UiState<List<PRContact>>,
+    val giftsSt: UiState<List<PRGift>>,
+    val appointmentsSt: UiState<List<Appointment>>,
+  )
+
   private fun observeWorkspaceSnapshot(membership: OfficeMembership): Flow<WorkspaceState> {
     val officeId = membership.officeId
     val role = membership.parsedRole()
@@ -267,6 +299,19 @@ class MainViewModel(
         flowOf(UiState.Success(emptyList()))
       }
 
+    val prCampaignsFlow =
+      repository.observePrCampaigns(officeId, normalizedEmail, hostOnly = isHostOnly)
+        .unwrapToUiState("PR campaigns")
+    val prContactsFlow =
+      repository.observePrContacts(officeId, normalizedEmail, hostOnly = isHostOnly)
+        .unwrapToUiState("PR contacts")
+    val prGiftsFlow =
+      repository.observePrGifts(officeId, normalizedEmail, hostOnly = isHostOnly)
+        .unwrapToUiState("PR gifts")
+    val appointmentsFlow =
+      repository.observeAppointments(officeId, normalizedEmail, hostOnly = isHostOnly)
+        .unwrapToUiState("appointments")
+
     val coreFlow =
       combine(
         officeFlow,
@@ -278,18 +323,33 @@ class MainViewModel(
         CoreStates(officeSt, staffSt, reasonsSt, visitsSt, profilesSt)
       }
 
+    val prAndApptFlow =
+      combine(
+        prCampaignsFlow,
+        prContactsFlow,
+        prGiftsFlow,
+        appointmentsFlow,
+      ) { campaignsSt, contactsSt, giftsSt, appointmentsSt ->
+        PrAndApptStates(campaignsSt, contactsSt, giftsSt, appointmentsSt)
+      }
+
     return combine(
       coreFlow,
+      prAndApptFlow,
       _pendingAvailability,
       _pendingVisitOverrides,
-    ) { core, pendingAvail, pendingVisits ->
+    ) { core, prAndAppt, pendingAvail, pendingVisits ->
       val officeSt = core.officeSt
       val staffSt = core.staffSt
       val reasonsSt = core.reasonsSt
       val visitsSt = core.visitsSt
       val profilesSt = core.profilesSt
+      val campaignsSt = prAndAppt.campaignsSt
+      val contactsSt = prAndAppt.contactsSt
+      val giftsSt = prAndAppt.giftsSt
+      val appointmentsSt = prAndAppt.appointmentsSt
       val firstError =
-        listOf(officeSt, staffSt, reasonsSt, visitsSt, profilesSt)
+        listOf(officeSt, staffSt, reasonsSt, visitsSt, profilesSt, campaignsSt, contactsSt, giftsSt, appointmentsSt)
           .filterIsInstance<UiState.Error>()
           .firstOrNull()
       if (firstError != null) {
@@ -300,7 +360,11 @@ class MainViewModel(
           staffSt is UiState.Loading ||
           reasonsSt is UiState.Loading ||
           visitsSt is UiState.Loading ||
-          profilesSt is UiState.Loading
+          profilesSt is UiState.Loading ||
+          campaignsSt is UiState.Loading ||
+          contactsSt is UiState.Loading ||
+          giftsSt is UiState.Loading ||
+          appointmentsSt is UiState.Loading
       ) {
         return@combine WorkspaceState.Loading
       }
@@ -310,6 +374,10 @@ class MainViewModel(
       val reasons = (reasonsSt as UiState.Success).data
       val rawVisits = (visitsSt as UiState.Success).data
       val profiles = (profilesSt as UiState.Success).data
+      val prCampaigns = (campaignsSt as UiState.Success).data
+      val prContacts = (contactsSt as UiState.Success).data
+      val prGifts = (giftsSt as UiState.Success).data
+      val rawAppointments = (appointmentsSt as UiState.Success).data
 
       val staff =
         if (pendingAvail != null) {
@@ -381,6 +449,31 @@ class MainViewModel(
         lastVisitsById = currentVisitsMap
       }
 
+      val scopedCampaigns =
+        if (resolvedRole == StaffRole.HOST) {
+          filterHostSpecificPrCampaigns(prCampaigns, normalizedEmail)
+        } else {
+          prCampaigns
+        }
+      val scopedContacts =
+        if (resolvedRole == StaffRole.HOST) {
+          filterHostSpecificPrContacts(prContacts, normalizedEmail)
+        } else {
+          prContacts
+        }
+      val scopedGifts =
+        if (resolvedRole == StaffRole.HOST) {
+          filterHostSpecificPrGifts(prGifts, normalizedEmail)
+        } else {
+          prGifts
+        }
+      val scopedAppointments =
+        if (resolvedRole == StaffRole.HOST) {
+          filterHostSpecificAppointments(rawAppointments, normalizedEmail, me?.id)
+        } else {
+          rawAppointments
+        }
+
       val snapshot =
         DeskSnapshot(
           office = office,
@@ -391,6 +484,10 @@ class MainViewModel(
           currentStaff = me,
           activeRole = resolvedRole,
           isDeactivated = false,
+          prCampaigns = scopedCampaigns,
+          prContacts = scopedContacts,
+          prGifts = scopedGifts,
+          appointments = scopedAppointments,
         )
 
       // One-time auto-seed / access-field sync for existing Admin workspaces
@@ -658,31 +755,12 @@ class MainViewModel(
           val result = cardScanner.extractFromBitmap(bitmap)
           result
             .onSuccess { extracted ->
-              val current = _receptionForm.value
-              val matchedProfile =
-                profiles.firstOrNull { profile ->
-                  (extracted.mobile.length >= 10 && profile.mobile == extracted.mobile) ||
-                    (extracted.email.isNotBlank() && profile.email.equals(extracted.email, ignoreCase = true))
-                }
-              val validHostId =
-                matchedProfile?.let { m -> hosts.firstOrNull { it.id == m.lastHostStaffId }?.id }
-                  ?: current.selectedHostId
-              val validReason =
-                matchedProfile?.lastReason?.takeIf { it.isNotBlank() } ?: current.selectedReason
-              val cardRemark = extracted.resolvedRemark()
-
               _receptionForm.value =
-                current.copy(
-                  name = extracted.name.ifBlank { matchedProfile?.name ?: current.name },
-                  company = extracted.company.ifBlank { matchedProfile?.company ?: current.company },
-                  mobile = extracted.mobile.ifBlank { current.mobile },
-                  email = extracted.email.ifBlank { matchedProfile?.email ?: current.email },
-                  dob = matchedProfile?.dob?.ifBlank { current.dob } ?: current.dob,
-                  remark = cardRemark.ifBlank { current.remark },
-                  selectedHostId = validHostId,
-                  selectedReason = validReason,
-                  matchedProfile = matchedProfile ?: current.matchedProfile,
-                  suppressedAutoMatchMobile = "",
+                mergeScannedCardIntoForm(
+                  current = _receptionForm.value,
+                  extracted = extracted,
+                  profiles = profiles,
+                  hosts = hosts,
                 )
               _cardScanState.value = CardScanState.Success(extracted, preview)
               val label = extracted.name.ifBlank { extracted.company.ifBlank { "visitor card" } }
@@ -724,23 +802,12 @@ class MainViewModel(
     val office = snapshot.office ?: return
     val form = _receptionForm.value
     if (form.isSubmitting) return
-    val host = snapshot.staff.firstOrNull { it.id == form.selectedHostId && it.activeAccount }
-    if (host == null) {
-      _feedback.tryEmit("Please select a person to meet.")
+    val validationError = validateReceptionCheckIn(form, snapshot.staff)
+    if (validationError != null) {
+      _feedback.tryEmit(validationError)
       return
     }
-    if (form.mobile.filter { it.isDigit() }.length < 10) {
-      _feedback.tryEmit("Enter a valid 10-digit mobile number.")
-      return
-    }
-    if (form.name.trim().isEmpty()) {
-      _feedback.tryEmit("Enter the visitor's name.")
-      return
-    }
-    if (form.selectedReason.trim().isEmpty()) {
-      _feedback.tryEmit("Select a reason to meet.")
-      return
-    }
+    val host = snapshot.staff.first { it.id == form.selectedHostId && it.activeAccount }
 
     _receptionForm.value = form.copy(isSubmitting = true)
     viewModelScope.launch {
@@ -922,6 +989,10 @@ class MainViewModel(
           currentReasons = snapshot.reasons,
           currentProfiles = snapshot.visitorProfiles,
           currentVisits = snapshot.visits,
+          currentPrCampaigns = snapshot.prCampaigns,
+          currentPrContacts = snapshot.prContacts,
+          currentPrGifts = snapshot.prGifts,
+          currentAppointments = snapshot.appointments,
           fullName = fullName,
           shownAs = shownAs,
           email = email,
@@ -940,6 +1011,51 @@ class MainViewModel(
       result
         .onSuccess { _feedback.tryEmit("Added $shownAs to staff directory") }
         .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to add staff member") }
+    }
+  }
+
+  fun updateOwnProfile(
+    snapshot: DeskSnapshot,
+    fullName: String,
+    shownAs: String,
+    designation: String,
+    department: String,
+    photoUrl: String,
+    floor: String,
+    cabin: String,
+    otherLocation: String,
+    requiredThings: String,
+    notes: String,
+  ) {
+    val officeId = snapshot.office?.id.orEmpty()
+    val staffId = snapshot.currentStaff?.id.orEmpty()
+    if (officeId.isBlank() || staffId.isBlank() || _isBusy.value) return
+    val cleanName = fullName.trim().take(80)
+    if (cleanName.isEmpty()) {
+      _feedback.tryEmit("Full name cannot be empty.")
+      return
+    }
+    _isBusy.value = true
+    viewModelScope.launch {
+      val result =
+        repository.updateOwnProfile(
+          officeId = officeId,
+          staffId = staffId,
+          fullName = cleanName,
+          shownAs = shownAs,
+          designation = designation,
+          department = department,
+          photoUrl = photoUrl,
+          floor = floor,
+          cabin = cabin,
+          otherLocation = otherLocation,
+          requiredThings = requiredThings,
+          notes = notes,
+        )
+      _isBusy.value = false
+      result
+        .onSuccess { _feedback.tryEmit("Saved your profile & seating") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to save profile") }
     }
   }
 
@@ -1005,6 +1121,10 @@ class MainViewModel(
           currentProfiles = snapshot.visitorProfiles,
           currentVisits = snapshot.visits,
           edited = edited,
+          currentPrCampaigns = snapshot.prCampaigns,
+          currentPrContacts = snapshot.prContacts,
+          currentPrGifts = snapshot.prGifts,
+          currentAppointments = snapshot.appointments,
         )
       _isBusy.value = false
       result
@@ -1031,29 +1151,556 @@ class MainViewModel(
     }
   }
 
-  // --- COMPUTED BOARD HELPERS ---
+  // --- PR MODULE ACTIONS ---
 
-  fun buildHostBoard(snapshot: DeskSnapshot, now: Long): List<HostBoardItem> {
-    val hosts = snapshot.staff.filter { it.activeAccount && it.hostListed }
-    return hosts.map { host ->
-      val activeMeeting =
-        snapshot.visits.firstOrNull {
-          it.hostStaffId == host.id && it.parsedStatus() == VisitStatus.IN_MEETING
-        }
-      val waitingCount =
-        snapshot.visits.count {
-          it.hostStaffId == host.id && it.parsedStatus() == VisitStatus.WAITING
-        }
-      val meetingMinutes =
-        DeskFormatters.minutesBetween(activeMeeting?.meetingStartedAt?.toDate()?.time, now)
-      HostBoardItem(
-        staff = host,
-        inMeetingVisit = activeMeeting,
-        waitingCount = waitingCount,
-        meetingMinutes = meetingMinutes,
+  fun savePrCampaign(
+    snapshot: DeskSnapshot,
+    existing: PRCampaign?,
+    title: String,
+    channel: PRChannel,
+    status: PRCampaignStatus,
+    targetDateLabel: String,
+    location: String,
+    audienceSummary: String,
+    notes: String,
+    ownerStaff: StaffMember?,
+  ) {
+    val office = snapshot.office ?: return
+    val validation = validatePrCampaign(title)
+    if (validation != null) {
+      _feedback.tryEmit(validation)
+      return
+    }
+    if (_isBusy.value) return
+    val isHostOnly = snapshot.activeRole == StaffRole.HOST
+    val resolvedOwner =
+      if (isHostOnly) snapshot.currentStaff
+      else ownerStaff ?: snapshot.currentStaff
+    val ownerName =
+      resolvedOwner?.shownAs?.ifBlank { resolvedOwner.fullName }
+        ?: existing?.ownerName
+        ?: currentUserDisplayName.ifBlank { normalizedEmail.substringBefore("@") }
+    val ownerEmail =
+      if (isHostOnly) normalizedEmail
+      else (resolvedOwner?.email?.trim()?.lowercase()?.ifBlank { existing?.ownerEmail.orEmpty() }
+        ?: normalizedEmail)
+
+    val model =
+      (existing ?: PRCampaign()).copy(
+        title = title.trim(),
+        channel = channel.wireValue,
+        status = status.wireValue,
+        targetDateLabel = targetDateLabel.trim(),
+        location = location.trim(),
+        audienceSummary = audienceSummary.trim(),
+        notes = notes.trim(),
+        ownerStaffId = resolvedOwner?.id ?: existing?.ownerStaffId.orEmpty(),
+        ownerName = ownerName,
+        ownerEmail = ownerEmail,
       )
+    _isBusy.value = true
+    viewModelScope.launch {
+      val res = repository.upsertPrCampaign(office, existing, model, isHostSelfEdit = isHostOnly)
+      _isBusy.value = false
+      res
+        .onSuccess {
+          _feedback.tryEmit(
+            if (existing == null) "Created PR campaign \"${model.title}\""
+            else "Updated PR campaign \"${model.title}\""
+          )
+        }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to save campaign") }
     }
   }
+
+  fun advancePrCampaignStatus(snapshot: DeskSnapshot, campaign: PRCampaign) {
+    val officeId = snapshot.office?.id.orEmpty()
+    if (officeId.isBlank() || campaign.id.isBlank()) return
+    val next = nextPrCampaignStatus(campaign.parsedStatus())
+    viewModelScope.launch {
+      repository
+        .updatePrCampaignStatus(officeId, campaign.id, next)
+        .onSuccess { _feedback.tryEmit("${campaign.title} → ${next.label}") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to update campaign status") }
+    }
+  }
+
+  fun deletePrCampaign(snapshot: DeskSnapshot, campaign: PRCampaign) {
+    val officeId = snapshot.office?.id.orEmpty()
+    if (officeId.isBlank() || campaign.id.isBlank() || snapshot.activeRole != StaffRole.ADMIN) return
+    viewModelScope.launch {
+      repository
+        .deletePrCampaign(officeId, campaign.id)
+        .onSuccess { _feedback.tryEmit("Removed campaign \"${campaign.title}\"") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to delete campaign") }
+    }
+  }
+
+  fun savePrContact(
+    snapshot: DeskSnapshot,
+    existing: PRContact?,
+    name: String,
+    organization: String,
+    designation: String,
+    tier: PRContactTier,
+    mobile: String,
+    email: String,
+    followUpStatus: PRFollowUpStatus,
+    nextFollowUpDate: String,
+    notes: String,
+    ownerStaff: StaffMember?,
+    photoUrl: String = existing?.photoUrl.orEmpty(),
+    dob: String = existing?.dob.orEmpty(),
+    anniversaryDate: String = existing?.anniversaryDate.orEmpty(),
+    specialGiftPreference: String = existing?.specialGiftPreference.orEmpty(),
+    cityOrAddress: String = existing?.cityOrAddress.orEmpty(),
+  ) {
+    val office = snapshot.office ?: return
+    val validation = validatePrContact(name, email, mobile)
+    if (validation != null) {
+      _feedback.tryEmit(validation)
+      return
+    }
+    if (_isBusy.value) return
+    val isHostOnly = snapshot.activeRole == StaffRole.HOST
+    val resolvedOwner =
+      if (isHostOnly) snapshot.currentStaff
+      else ownerStaff ?: snapshot.currentStaff
+    val ownerName =
+      resolvedOwner?.shownAs?.ifBlank { resolvedOwner.fullName }
+        ?: existing?.ownerName
+        ?: currentUserDisplayName.ifBlank { normalizedEmail.substringBefore("@") }
+    val ownerEmail =
+      if (isHostOnly) normalizedEmail
+      else (resolvedOwner?.email?.trim()?.lowercase()?.ifBlank { existing?.ownerEmail.orEmpty() }
+        ?: normalizedEmail)
+
+    val model =
+      (existing ?: PRContact()).copy(
+        name = name.trim(),
+        organization = organization.trim(),
+        designation = designation.trim(),
+        tier = tier.wireValue,
+        mobile = mobile.trim(),
+        email = email.trim().lowercase(),
+        followUpStatus = followUpStatus.wireValue,
+        nextFollowUpDate = nextFollowUpDate.trim(),
+        photoUrl = photoUrl.trim(),
+        dob = dob.trim(),
+        anniversaryDate = anniversaryDate.trim(),
+        lastWishedYear = existing?.lastWishedYear ?: 0L,
+        specialGiftPreference = specialGiftPreference.trim(),
+        cityOrAddress = cityOrAddress.trim(),
+        notes = notes.trim(),
+        ownerStaffId = resolvedOwner?.id ?: existing?.ownerStaffId.orEmpty(),
+        ownerName = ownerName,
+        ownerEmail = ownerEmail,
+      )
+    _isBusy.value = true
+    viewModelScope.launch {
+      val res = repository.upsertPrContact(office, existing, model, isHostSelfEdit = isHostOnly)
+      _isBusy.value = false
+      res
+        .onSuccess {
+          _feedback.tryEmit(
+            if (existing == null) "Added ${model.name} to PR contacts"
+            else "Updated PR contact ${model.name}"
+          )
+        }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to save PR contact") }
+    }
+  }
+
+  fun markPrContactWished(snapshot: DeskSnapshot, contact: PRContact) {
+    val officeId = snapshot.office?.id.orEmpty()
+    if (officeId.isBlank() || contact.id.isBlank()) return
+    val year = DeskFormatters.currentYear()
+    viewModelScope.launch {
+      repository
+        .markPrContactWished(officeId, contact.id, year)
+        .onSuccess { _feedback.tryEmit("Recorded wish sent to ${contact.name} ($year)") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Could not record wish") }
+    }
+  }
+
+  fun cyclePrContactFollowUp(snapshot: DeskSnapshot, contact: PRContact) {
+    val officeId = snapshot.office?.id.orEmpty()
+    if (officeId.isBlank() || contact.id.isBlank()) return
+    val next = nextPrFollowUpStatus(contact.parsedFollowUpStatus())
+    viewModelScope.launch {
+      repository
+        .updatePrContactFollowUp(officeId, contact.id, next)
+        .onSuccess { _feedback.tryEmit("${contact.name} marked ${next.label}") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to update follow-up") }
+    }
+  }
+
+  fun deletePrContact(snapshot: DeskSnapshot, contact: PRContact) {
+    val officeId = snapshot.office?.id.orEmpty()
+    if (officeId.isBlank() || contact.id.isBlank() || snapshot.activeRole != StaffRole.ADMIN) return
+    viewModelScope.launch {
+      repository
+        .deletePrContact(officeId, contact.id)
+        .onSuccess { _feedback.tryEmit("Removed contact ${contact.name}") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to delete contact") }
+    }
+  }
+
+  fun promoteVisitorToPrContact(
+    snapshot: DeskSnapshot,
+    profile: VisitorProfile,
+    tier: PRContactTier,
+  ) {
+    val office = snapshot.office ?: return
+    val alreadyExists =
+      snapshot.prContacts.any { existing ->
+        (profile.mobile.isNotBlank() && existing.mobile == profile.mobile) ||
+          (profile.email.isNotBlank() && existing.email.equals(profile.email, ignoreCase = true)) ||
+          (existing.name.equals(profile.name, ignoreCase = true) &&
+            existing.organization.equals(profile.company, ignoreCase = true))
+      }
+    if (alreadyExists) {
+      _feedback.tryEmit("${profile.name} is already in PR contacts")
+      return
+    }
+    val owner =
+      snapshot.staff.firstOrNull { it.id == profile.lastHostStaffId && it.activeAccount }
+        ?: snapshot.currentStaff
+    val contact =
+      buildPrContactFromVisitorProfile(
+        profile = profile,
+        ownerStaff = owner,
+        fallbackOwnerEmail = normalizedEmail,
+        fallbackOwnerName = currentUserDisplayName.ifBlank { normalizedEmail.substringBefore("@") },
+        tier = tier,
+      )
+    _isBusy.value = true
+    viewModelScope.launch {
+      val res =
+        repository.upsertPrContact(
+          office = office,
+          existing = null,
+          contact = contact,
+          isHostSelfEdit = snapshot.activeRole == StaffRole.HOST,
+        )
+      _isBusy.value = false
+      res
+        .onSuccess { _feedback.tryEmit("Promoted ${contact.name} to ${tier.label} PR contacts") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to promote visitor") }
+    }
+  }
+
+  fun promoteHostClientToPrContact(
+    snapshot: DeskSnapshot,
+    client: HostClientSummary,
+    tier: PRContactTier,
+  ) {
+    val office = snapshot.office ?: return
+    val alreadyExists =
+      snapshot.prContacts.any { existing ->
+        (client.mobile.isNotBlank() && existing.mobile == client.mobile) ||
+          (client.email.isNotBlank() && existing.email.equals(client.email, ignoreCase = true)) ||
+          (existing.name.equals(client.name, ignoreCase = true) &&
+            existing.organization.equals(client.company, ignoreCase = true))
+      }
+    if (alreadyExists) {
+      _feedback.tryEmit("${client.name} is already in your PR contacts")
+      return
+    }
+    val contact =
+      buildPrContactFromHostClient(
+        client = client,
+        ownerStaff = snapshot.currentStaff,
+        fallbackOwnerEmail = normalizedEmail,
+        fallbackOwnerName = currentUserDisplayName.ifBlank { normalizedEmail.substringBefore("@") },
+        tier = tier,
+      )
+    _isBusy.value = true
+    viewModelScope.launch {
+      val res =
+        repository.upsertPrContact(
+          office = office,
+          existing = null,
+          contact = contact,
+          isHostSelfEdit = snapshot.activeRole == StaffRole.HOST,
+        )
+      _isBusy.value = false
+      res
+        .onSuccess { _feedback.tryEmit("Added ${contact.name} to ${tier.label} PR contacts") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to add client to PR") }
+    }
+  }
+
+  fun sendPrContactToReceptionCheckIn(snapshot: DeskSnapshot, contact: PRContact) {
+    if (snapshot.activeRole != StaffRole.RECEPTION) return
+    val hosts = snapshot.staff.filter { it.activeAccount && it.hostListed }
+    val matchingHostId =
+      hosts.firstOrNull { it.id == contact.ownerStaffId }?.id
+        ?: hosts.firstOrNull { it.email.equals(contact.ownerEmail, ignoreCase = true) }?.id
+        ?: _receptionForm.value.selectedHostId
+        ?: hosts.firstOrNull()?.id.orEmpty()
+    val preferredReason =
+      snapshot.reasons.firstOrNull { it.shown && it.label.equals("Connection", ignoreCase = true) }?.label
+        ?: snapshot.reasons.firstOrNull { it.shown }?.label
+        ?: "Meeting"
+    val cleanMobile =
+      contact.mobile.filter { it.isDigit() }.takeUnless { it == "919999999999" }.orEmpty()
+    _receptionForm.value =
+      ReceptionFormState(
+        mobile = cleanMobile,
+        name = contact.name.trim(),
+        company = contact.organization.trim(),
+        email = contact.email.trim(),
+        remark = listOfNotNull(
+          contact.tier.takeIf { it.isNotBlank() },
+          contact.designation.takeIf { it.isNotBlank() },
+        ).joinToString(" · "),
+        selectedReason = preferredReason,
+        selectedHostId = matchingHostId,
+      )
+    _selectedTab.value = AppTab.RECEPTION
+    _feedback.tryEmit("Pre-filled reception check-in for ${contact.name}")
+  }
+
+  fun savePrGift(
+    snapshot: DeskSnapshot,
+    existing: PRGift?,
+    recipientOrSender: String,
+    company: String,
+    itemTitle: String,
+    direction: PRGiftDirection,
+    status: PRGiftStatus,
+    occasion: String,
+    dateLabel: String,
+    notes: String,
+    ownerStaff: StaffMember?,
+  ) {
+    val office = snapshot.office ?: return
+    val validation = validatePrGift(recipientOrSender, itemTitle)
+    if (validation != null) {
+      _feedback.tryEmit(validation)
+      return
+    }
+    if (_isBusy.value) return
+    val isHostOnly = snapshot.activeRole == StaffRole.HOST
+    val resolvedOwner =
+      if (isHostOnly) snapshot.currentStaff
+      else ownerStaff ?: snapshot.currentStaff
+    val ownerName =
+      resolvedOwner?.shownAs?.ifBlank { resolvedOwner.fullName }
+        ?: existing?.ownerName
+        ?: currentUserDisplayName.ifBlank { normalizedEmail.substringBefore("@") }
+    val ownerEmail =
+      if (isHostOnly) normalizedEmail
+      else (resolvedOwner?.email?.trim()?.lowercase()?.ifBlank { existing?.ownerEmail.orEmpty() }
+        ?: normalizedEmail)
+
+    val model =
+      (existing ?: PRGift()).copy(
+        recipientOrSender = recipientOrSender.trim(),
+        company = company.trim(),
+        itemTitle = itemTitle.trim(),
+        direction = direction.wireValue,
+        status = status.wireValue,
+        occasion = occasion.trim(),
+        dateLabel = dateLabel.trim(),
+        notes = notes.trim(),
+        ownerStaffId = resolvedOwner?.id ?: existing?.ownerStaffId.orEmpty(),
+        ownerName = ownerName,
+        ownerEmail = ownerEmail,
+      )
+    _isBusy.value = true
+    viewModelScope.launch {
+      val res = repository.upsertPrGift(office, existing, model, isHostSelfEdit = isHostOnly)
+      _isBusy.value = false
+      res
+        .onSuccess {
+          _feedback.tryEmit(
+            if (existing == null) "Logged PR gift for ${model.recipientOrSender}"
+            else "Updated gift record for ${model.recipientOrSender}"
+          )
+        }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to save gift record") }
+    }
+  }
+
+  fun advancePrGiftStatus(snapshot: DeskSnapshot, gift: PRGift) {
+    val officeId = snapshot.office?.id.orEmpty()
+    if (officeId.isBlank() || gift.id.isBlank()) return
+    val next = nextPrGiftStatus(gift.parsedStatus())
+    viewModelScope.launch {
+      repository
+        .updatePrGiftStatus(officeId, gift.id, next)
+        .onSuccess { _feedback.tryEmit("${gift.recipientOrSender} gift → ${next.label}") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to update gift status") }
+    }
+  }
+
+  fun deletePrGift(snapshot: DeskSnapshot, gift: PRGift) {
+    val officeId = snapshot.office?.id.orEmpty()
+    if (officeId.isBlank() || gift.id.isBlank() || snapshot.activeRole != StaffRole.ADMIN) return
+    viewModelScope.launch {
+      repository
+        .deletePrGift(officeId, gift.id)
+        .onSuccess { _feedback.tryEmit("Removed gift entry for ${gift.recipientOrSender}") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to delete gift") }
+    }
+  }
+
+  // --- APPOINTMENT BOOKING ACTIONS ---
+
+  fun saveAppointment(
+    snapshot: DeskSnapshot,
+    existing: Appointment?,
+    visitorName: String,
+    visitorMobile: String,
+    visitorCompany: String,
+    visitorEmail: String,
+    purpose: String,
+    location: String,
+    scheduledDateIso: String,
+    scheduledTimeLabel: String,
+    notes: String,
+    assignedHostStaff: StaffMember?,
+  ) {
+    val office = snapshot.office ?: return
+    val isHostOnly = snapshot.activeRole == StaffRole.HOST
+    val targetHost =
+      if (isHostOnly) snapshot.currentStaff
+      else assignedHostStaff ?: snapshot.currentStaff
+    val hostId = targetHost?.id ?: existing?.hostStaffId.orEmpty()
+    val validation =
+      validateAppointment(
+        visitorName = visitorName,
+        scheduledDateIso = scheduledDateIso,
+        scheduledTimeLabel = scheduledTimeLabel,
+        hostStaffId = hostId,
+      )
+    if (validation != null) {
+      _feedback.tryEmit(validation)
+      return
+    }
+    if (_isBusy.value) return
+
+    val resolvedHostName =
+      targetHost?.shownAs?.ifBlank { targetHost.fullName }
+        ?: existing?.hostShownAs
+        ?: currentUserDisplayName.ifBlank { normalizedEmail.substringBefore("@") }
+    val resolvedHostEmail =
+      if (isHostOnly) normalizedEmail
+      else (targetHost?.email?.trim()?.lowercase()?.ifBlank { existing?.hostEmail.orEmpty() }
+        ?: normalizedEmail)
+    val resolvedCabin =
+      targetHost?.formattedSeating()?.ifBlank { targetHost.cabin }
+        ?: existing?.hostCabin.orEmpty()
+    val cleanDate = scheduledDateIso.trim()
+    val cleanTime = scheduledTimeLabel.trim()
+    val scheduledMs = DeskFormatters.parseScheduledMillis(cleanDate, cleanTime)
+
+    val model =
+      (existing ?: Appointment()).copy(
+        visitorName = visitorName.trim(),
+        visitorMobile = visitorMobile.trim(),
+        visitorCompany = visitorCompany.trim(),
+        visitorEmail = visitorEmail.trim().lowercase(),
+        purpose = purpose.trim().ifBlank { "Meeting" },
+        location = location.trim().ifBlank { resolvedCabin },
+        scheduledDateIso = cleanDate,
+        scheduledTimeLabel = cleanTime,
+        scheduledAtMillis = scheduledMs,
+        notes = notes.trim(),
+        hostStaffId = hostId,
+        hostShownAs = resolvedHostName,
+        hostEmail = resolvedHostEmail,
+        hostCabin = resolvedCabin,
+        status = existing?.status ?: AppointmentStatus.SCHEDULED.wireValue,
+        bookedByRole = existing?.bookedByRole?.ifBlank { snapshot.activeRole.wireValue }
+          ?: snapshot.activeRole.wireValue,
+      )
+
+    _isBusy.value = true
+    viewModelScope.launch {
+      val res = repository.upsertAppointment(office, existing, model, isHostSelfEdit = isHostOnly)
+      _isBusy.value = false
+      res
+        .onSuccess {
+          val day = DeskFormatters.formatAppointmentDayLabel(cleanDate)
+          _feedback.tryEmit(
+            if (existing == null) "Booked ${model.visitorName} for $resolvedHostName ($day · $cleanTime)"
+            else "Updated appointment for ${model.visitorName}"
+          )
+        }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to save appointment") }
+    }
+  }
+
+  fun updateAppointmentStatus(
+    snapshot: DeskSnapshot,
+    appointment: Appointment,
+    newStatus: AppointmentStatus,
+  ) {
+    val officeId = snapshot.office?.id.orEmpty()
+    if (officeId.isBlank() || appointment.id.isBlank()) return
+    viewModelScope.launch {
+      repository
+        .updateAppointmentStatus(officeId, appointment.id, newStatus)
+        .onSuccess {
+          _feedback.tryEmit("Appointment for ${appointment.visitorName} marked ${newStatus.label}")
+        }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to update appointment") }
+    }
+  }
+
+  fun checkInFromAppointment(snapshot: DeskSnapshot, appointment: Appointment) {
+    val office = snapshot.office ?: return
+    if (snapshot.activeRole != StaffRole.RECEPTION) return
+    val host =
+      snapshot.staff.firstOrNull { it.id == appointment.hostStaffId && it.activeAccount }
+        ?: snapshot.staff.firstOrNull {
+          it.email.equals(appointment.hostEmail, ignoreCase = true) && it.activeAccount
+        }
+    if (host == null) {
+      _feedback.tryEmit("Host account for this appointment is not active.")
+      return
+    }
+    val digits =
+      appointment.visitorMobile.filter { it.isDigit() }.takeUnless { it == "919999999999" }.orEmpty()
+    val existingProfile =
+      snapshot.visitorProfiles.firstOrNull { profile ->
+        (digits.length >= 6 && profile.mobile.filter { it.isDigit() } == digits) ||
+          (appointment.visitorEmail.isNotBlank() &&
+            profile.email.equals(appointment.visitorEmail, ignoreCase = true)) ||
+          (profile.name.equals(appointment.visitorName, ignoreCase = true) &&
+            profile.company.equals(appointment.visitorCompany, ignoreCase = true))
+      }
+    if (_isBusy.value) return
+    _isBusy.value = true
+    viewModelScope.launch {
+      val res = repository.checkInFromAppointment(office, appointment, host, existingProfile)
+      _isBusy.value = false
+      res
+        .onSuccess {
+          _feedback.tryEmit("Checked in ${appointment.visitorName} for ${host.shownAs.ifBlank { host.fullName }}")
+        }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Check-in from appointment failed") }
+    }
+  }
+
+  fun deleteAppointment(snapshot: DeskSnapshot, appointment: Appointment) {
+    val officeId = snapshot.office?.id.orEmpty()
+    if (officeId.isBlank() || appointment.id.isBlank() || snapshot.activeRole != StaffRole.ADMIN) return
+    viewModelScope.launch {
+      repository
+        .deleteAppointment(officeId, appointment.id)
+        .onSuccess { _feedback.tryEmit("Deleted appointment for ${appointment.visitorName}") }
+        .onFailure { _feedback.tryEmit(it.localizedMessage ?: "Failed to delete appointment") }
+    }
+  }
+
+  // --- COMPUTED BOARD HELPERS ---
+
+  fun buildHostBoard(snapshot: DeskSnapshot, now: Long): List<HostBoardItem> =
+    buildHostBoard(staff = snapshot.staff, visits = snapshot.visits, now = now)
 
   companion object {
     private const val TAG = "MainViewModel"
@@ -1080,11 +1727,218 @@ class MainViewModel(
       }
     }
 
+    fun filterHostSpecificPrCampaigns(
+      campaigns: List<PRCampaign>,
+      userEmail: String,
+    ): List<PRCampaign> {
+      val cleanEmail = userEmail.trim().lowercase()
+      if (cleanEmail.isBlank()) return emptyList()
+      return campaigns.filter { it.ownerEmail.trim().lowercase() == cleanEmail }
+    }
+
+    fun filterHostSpecificPrContacts(
+      contacts: List<PRContact>,
+      userEmail: String,
+    ): List<PRContact> {
+      val cleanEmail = userEmail.trim().lowercase()
+      if (cleanEmail.isBlank()) return emptyList()
+      return contacts.filter { it.ownerEmail.trim().lowercase() == cleanEmail }
+    }
+
+    fun filterHostSpecificPrGifts(
+      gifts: List<PRGift>,
+      userEmail: String,
+    ): List<PRGift> {
+      val cleanEmail = userEmail.trim().lowercase()
+      if (cleanEmail.isBlank()) return emptyList()
+      return gifts.filter { it.ownerEmail.trim().lowercase() == cleanEmail }
+    }
+
+    fun filterHostSpecificAppointments(
+      appointments: List<Appointment>,
+      userEmail: String,
+      staffId: String? = null,
+    ): List<Appointment> {
+      val cleanEmail = userEmail.trim().lowercase()
+      val cleanStaffId = staffId?.trim().orEmpty()
+      return appointments.filter { appt ->
+        val matchesEmail =
+          cleanEmail.isNotBlank() && appt.hostEmail.trim().lowercase() == cleanEmail
+        val matchesStaffId =
+          cleanStaffId.isNotBlank() &&
+            appt.hostStaffId == cleanStaffId &&
+            (appt.hostEmail.isBlank() || appt.hostEmail.trim().lowercase() == cleanEmail)
+        matchesEmail || matchesStaffId
+      }
+    }
+
+    fun upcomingScheduledAppointments(
+      appointments: List<Appointment>,
+      nowMillis: Long = System.currentTimeMillis(),
+    ): List<Appointment> {
+      val todayStart = DeskFormatters.startOfTodayMillis(nowMillis)
+      return appointments
+        .filter { appt ->
+          appt.parsedStatus() == AppointmentStatus.SCHEDULED &&
+            (appt.scheduledAtMillis == 0L || appt.scheduledAtMillis >= todayStart)
+        }
+        .sortedWith(
+          compareBy<Appointment> { if (it.scheduledAtMillis > 0L) it.scheduledAtMillis else Long.MAX_VALUE }
+            .thenBy { it.scheduledDateIso }
+            .thenBy { it.scheduledTimeLabel }
+        )
+    }
+
+    fun validateAppointment(
+      visitorName: String,
+      scheduledDateIso: String,
+      scheduledTimeLabel: String,
+      hostStaffId: String,
+    ): String? {
+      if (visitorName.trim().isEmpty()) return "Enter the visitor or client's name."
+      if (hostStaffId.trim().isEmpty()) return "Select a host for this appointment."
+      if (scheduledDateIso.trim().isEmpty()) return "Choose an appointment date."
+      if (scheduledTimeLabel.trim().isEmpty()) return "Choose a time slot."
+      return null
+    }
+
+    fun computePrMetrics(
+      campaigns: List<PRCampaign>,
+      contacts: List<PRContact>,
+      gifts: List<PRGift>,
+      nowMillis: Long = System.currentTimeMillis(),
+    ): PRMetrics =
+      PRMetrics(
+        activeCampaigns = campaigns.count { it.parsedStatus() != PRCampaignStatus.COMPLETED },
+        liveCampaigns = campaigns.count { it.parsedStatus() == PRCampaignStatus.LIVE },
+        totalContacts = contacts.size,
+        dueFollowUps = contacts.count { it.parsedFollowUpStatus() == PRFollowUpStatus.FOLLOW_UP_DUE },
+        pendingGifts = gifts.count { it.parsedStatus() != PRGiftStatus.ACKNOWLEDGED },
+        upcomingBirthdays = contacts.count {
+          val days = DeskFormatters.daysUntilBirthday(it.dob, nowMillis)
+          days != null && days in 0..30
+        },
+      )
+
+    fun nextPrCampaignStatus(current: PRCampaignStatus): PRCampaignStatus =
+      when (current) {
+        PRCampaignStatus.PLANNED -> PRCampaignStatus.ACTIVE
+        PRCampaignStatus.ACTIVE -> PRCampaignStatus.LIVE
+        PRCampaignStatus.LIVE -> PRCampaignStatus.COMPLETED
+        PRCampaignStatus.COMPLETED -> PRCampaignStatus.PLANNED
+      }
+
+    fun nextPrFollowUpStatus(current: PRFollowUpStatus): PRFollowUpStatus =
+      when (current) {
+        PRFollowUpStatus.WARM -> PRFollowUpStatus.FOLLOW_UP_DUE
+        PRFollowUpStatus.FOLLOW_UP_DUE -> PRFollowUpStatus.SCHEDULED
+        PRFollowUpStatus.SCHEDULED -> PRFollowUpStatus.CONNECTED
+        PRFollowUpStatus.CONNECTED -> PRFollowUpStatus.WARM
+      }
+
+    fun nextPrGiftStatus(current: PRGiftStatus): PRGiftStatus =
+      when (current) {
+        PRGiftStatus.PREPARED -> PRGiftStatus.DISPATCHED
+        PRGiftStatus.DISPATCHED -> PRGiftStatus.DELIVERED
+        PRGiftStatus.DELIVERED -> PRGiftStatus.ACKNOWLEDGED
+        PRGiftStatus.ACKNOWLEDGED -> PRGiftStatus.PREPARED
+      }
+
+    fun validatePrCampaign(title: String): String? {
+      if (title.trim().isEmpty()) return "Enter a campaign or event title."
+      return null
+    }
+
+    fun validatePrContact(name: String, email: String, mobile: String): String? {
+      if (name.trim().isEmpty()) return "Enter the contact person's name."
+      val cleanEmail = email.trim()
+      if (cleanEmail.isNotEmpty() && (!cleanEmail.contains("@") || cleanEmail.length < 5)) {
+        return "Enter a valid email address or leave blank."
+      }
+      val digits = mobile.filter { it.isDigit() }
+      if (mobile.trim().isNotEmpty() && digits.length < 7) {
+        return "Enter a valid phone number or leave blank."
+      }
+      return null
+    }
+
+    fun validatePrGift(recipientOrSender: String, itemTitle: String): String? {
+      if (recipientOrSender.trim().isEmpty()) return "Enter recipient or sender name."
+      if (itemTitle.trim().isEmpty()) return "Enter the gift / press kit description."
+      return null
+    }
+
+    fun buildPrContactFromVisitorProfile(
+      profile: VisitorProfile,
+      ownerStaff: StaffMember?,
+      fallbackOwnerEmail: String,
+      fallbackOwnerName: String,
+      tier: PRContactTier,
+    ): PRContact {
+      val usableMobile =
+        profile.mobile.filter { it.isDigit() }.takeUnless { it == "919999999999" }.orEmpty()
+      val ownerEmail =
+        ownerStaff?.email?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: fallbackOwnerEmail
+      val ownerName =
+        ownerStaff?.shownAs?.ifBlank { ownerStaff.fullName } ?: fallbackOwnerName
+      return PRContact(
+        name = profile.name.trim(),
+        organization = profile.company.trim(),
+        designation = profile.visitorJobProfile.trim(),
+        tier = tier.wireValue,
+        mobile = usableMobile,
+        email = profile.email.trim().lowercase(),
+        followUpStatus = PRFollowUpStatus.WARM.wireValue,
+        dob = profile.dob.trim(),
+        notes = profile.remark.trim(),
+        ownerStaffId = ownerStaff?.id.orEmpty(),
+        ownerName = ownerName,
+        ownerEmail = ownerEmail,
+      )
+    }
+
+    fun buildPrContactFromHostClient(
+      client: HostClientSummary,
+      ownerStaff: StaffMember?,
+      fallbackOwnerEmail: String,
+      fallbackOwnerName: String,
+      tier: PRContactTier,
+    ): PRContact {
+      val usableMobile =
+        client.mobile.filter { it.isDigit() }.takeUnless { it == "919999999999" }.orEmpty()
+      val ownerEmail =
+        ownerStaff?.email?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: fallbackOwnerEmail
+      val ownerName =
+        ownerStaff?.shownAs?.ifBlank { ownerStaff.fullName } ?: fallbackOwnerName
+      return PRContact(
+        name = client.name.trim(),
+        organization = client.company.trim(),
+        designation = client.jobProfile.trim(),
+        tier = tier.wireValue,
+        mobile = usableMobile,
+        email = client.email.trim().lowercase(),
+        followUpStatus = PRFollowUpStatus.WARM.wireValue,
+        notes = client.lastRemark.trim(),
+        ownerStaffId = ownerStaff?.id.orEmpty(),
+        ownerName = ownerName,
+        ownerEmail = ownerEmail,
+      )
+    }
+
+    fun buildBirthdayWishMessage(contact: PRContact, senderName: String): String {
+      val firstName = contact.name.trim().split(" ").firstOrNull()?.takeIf { it.isNotBlank() } ?: "there"
+      val from = senderName.trim().ifBlank { "Team ArchPoint" }
+      val orgNote =
+        contact.organization.trim().takeIf { it.isNotBlank() }?.let { " and continued success at $it" }.orEmpty()
+      return "Warmest birthday wishes, $firstName! Wishing you a joyful year ahead$orgNote. Best regards, $from · ArchPoint Studio"
+    }
+
     fun resolveTabsForRole(role: StaffRole, hostListed: Boolean): List<AppTab> =
       when (role) {
         StaffRole.RECEPTION ->
           buildList {
             add(AppTab.RECEPTION)
+            add(AppTab.PR)
             if (hostListed) add(AppTab.MY_VISITORS)
             add(AppTab.PROFILE)
           }
@@ -1092,12 +1946,14 @@ class MainViewModel(
           buildList {
             add(AppTab.ADMIN)
             add(AppTab.VISITOR_LOG)
+            add(AppTab.PR)
             if (hostListed) add(AppTab.MY_VISITORS)
             add(AppTab.PROFILE)
           }
         StaffRole.HOST ->
           listOf(
             AppTab.MY_VISITORS,
+            AppTab.PR,
             AppTab.PROFILE,
           )
       }
@@ -1179,6 +2035,98 @@ class MainViewModel(
         suppressedAutoMatchMobile = "",
         isSubmitting = false,
       )
+    }
+
+    fun mergeScannedCardIntoForm(
+      current: ReceptionFormState,
+      extracted: ScannedVisitorCard,
+      profiles: List<VisitorProfile>,
+      hosts: List<StaffMember>,
+    ): ReceptionFormState {
+      val matchedProfile =
+        profiles.firstOrNull { profile ->
+          (extracted.mobile.length >= 10 && profile.mobile == extracted.mobile) ||
+            (extracted.email.isNotBlank() && profile.email.equals(extracted.email, ignoreCase = true))
+        }
+      val validHostId =
+        matchedProfile?.let { m -> hosts.firstOrNull { it.id == m.lastHostStaffId }?.id }
+          ?: current.selectedHostId
+      val validReason =
+        matchedProfile?.lastReason?.takeIf { it.isNotBlank() } ?: current.selectedReason
+      val cardRemark = extracted.resolvedRemark()
+      return current.copy(
+        name = extracted.name.ifBlank { matchedProfile?.name ?: current.name },
+        company = extracted.company.ifBlank { matchedProfile?.company ?: current.company },
+        mobile = extracted.mobile.ifBlank { current.mobile },
+        email = extracted.email.ifBlank { matchedProfile?.email ?: current.email },
+        dob = matchedProfile?.dob?.ifBlank { current.dob } ?: current.dob,
+        remark = cardRemark.ifBlank { current.remark },
+        selectedHostId = validHostId,
+        selectedReason = validReason,
+        matchedProfile = matchedProfile ?: current.matchedProfile,
+        suppressedAutoMatchMobile = "",
+      )
+    }
+
+    fun validateReceptionCheckIn(
+      form: ReceptionFormState,
+      staff: List<StaffMember>,
+    ): String? {
+      val host = staff.firstOrNull { it.id == form.selectedHostId && it.activeAccount }
+        ?: return "Please select a person to meet."
+      if (host.id.isBlank()) return "Please select a person to meet."
+      if (form.mobile.filter { it.isDigit() }.length < 10) {
+        return "Enter a valid 10-digit mobile number."
+      }
+      if (form.name.trim().isEmpty()) {
+        return "Enter the visitor's name."
+      }
+      if (form.selectedReason.trim().isEmpty()) {
+        return "Select a reason to meet."
+      }
+      return null
+    }
+
+    fun resolveHostAvailabilityVisual(item: HostBoardItem): Pair<String, AvailabilityTone> {
+      val baseAvail = item.staff.parsedAvailability()
+      return if (item.inMeetingVisit != null) {
+        "In meeting · ${item.meetingMinutes}m" to AvailabilityTone.ORANGE
+      } else {
+        baseAvail.receptionLabel to baseAvail.tone
+      }
+    }
+
+    fun buildHostBoard(
+      staff: List<StaffMember>,
+      visits: List<Visit>,
+      now: Long,
+    ): List<HostBoardItem> {
+      val hosts = staff.filter { it.activeAccount && it.hostListed }
+      return hosts.map { host ->
+        val activeMeeting =
+          visits.firstOrNull {
+            it.hostStaffId == host.id && it.parsedStatus() == VisitStatus.IN_MEETING
+          }
+        val waitingCount =
+          visits.count {
+            it.hostStaffId == host.id && it.parsedStatus() == VisitStatus.WAITING
+          }
+        val meetingMinutes =
+          DeskFormatters.minutesBetween(activeMeeting?.meetingStartedAt?.toDate()?.time, now)
+        HostBoardItem(
+          staff = host,
+          inMeetingVisit = activeMeeting,
+          waitingCount = waitingCount,
+          meetingMinutes = meetingMinutes,
+        )
+      }
+    }
+
+    fun normalizeShownAs(fullName: String, shownAs: String): String {
+      val cleanFull = fullName.trim().take(80)
+      return shownAs.trim().take(60).ifBlank {
+        cleanFull.split(" ").firstOrNull()?.takeIf { it.isNotBlank() } ?: "Staff"
+      }
     }
 
     fun buildRecentVisitors(

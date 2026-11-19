@@ -88,6 +88,8 @@ fun StaffEditorBottomSheet(
     photoUrl: String,
   ) -> Unit,
   onSaveUser: (StaffMember) -> Unit,
+  defaultRole: StaffRole = StaffRole.HOST,
+  defaultHostListed: Boolean = true,
 ) {
   val isEditing = existingMember != null
   val context = LocalContext.current
@@ -108,11 +110,11 @@ fun StaffEditorBottomSheet(
   var listOrderStr by remember(existingMember?.id) {
     mutableStateOf(existingMember?.listOrder?.toString() ?: "")
   }
-  var role by remember(existingMember?.id) {
-    mutableStateOf(existingMember?.parsedRole() ?: StaffRole.HOST)
+  var role by remember(existingMember?.id, defaultRole) {
+    mutableStateOf(existingMember?.parsedRole() ?: defaultRole)
   }
-  var hostListed by remember(existingMember?.id) {
-    mutableStateOf(existingMember?.hostListed ?: true)
+  var hostListed by remember(existingMember?.id, defaultHostListed) {
+    mutableStateOf(existingMember?.hostListed ?: defaultHostListed)
   }
   var activeAccount by remember(existingMember?.id) {
     mutableStateOf(existingMember?.activeAccount ?: true)
@@ -167,7 +169,12 @@ fun StaffEditorBottomSheet(
       ) {
         Column(modifier = Modifier.weight(1f)) {
           Text(
-            text = if (isEditing) "Edit staff member" else "Add new user",
+            text =
+              when {
+                isEditing -> "Edit staff member"
+                defaultRole == StaffRole.HOST && defaultHostListed -> "Add new host"
+                else -> "Add new user"
+              },
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
           )
@@ -175,6 +182,8 @@ fun StaffEditorBottomSheet(
             text =
               if (isEditing) {
                 "Update profile photo, designation, seating, email, and portal access."
+              } else if (defaultRole == StaffRole.HOST && defaultHostListed) {
+                "Add a host so reception can check in visitors and assign their cabin & portal email."
               } else {
                 "Add a user with an assigned email and portal access role."
               },

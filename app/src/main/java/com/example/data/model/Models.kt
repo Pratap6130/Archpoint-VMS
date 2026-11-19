@@ -17,14 +17,28 @@ enum class StaffRole(val wireValue: String, val label: String) {
   }
 }
 
-enum class HostAvailability(val wireValue: String, val label: String) {
-  AVAILABLE("Available", "Available"),
-  BUSY("Busy", "Busy"),
-  AWAY("Away", "Away");
+enum class AvailabilityTone {
+  GREEN,
+  ORANGE,
+  RED,
+}
+
+enum class HostAvailability(
+  val wireValue: String,
+  val label: String,
+  val receptionLabel: String,
+  val tone: AvailabilityTone,
+) {
+  AVAILABLE("Available", "Free", "Free", AvailabilityTone.GREEN),
+  BUSY("Busy", "Busy", "Busy", AvailabilityTone.ORANGE),
+  AWAY("Away", "Away", "Away", AvailabilityTone.RED);
 
   companion object {
     fun fromWire(raw: String?): HostAvailability =
       entries.firstOrNull { it.wireValue.equals(raw?.trim(), ignoreCase = true) } ?: AVAILABLE
+
+    fun resolveTone(availability: HostAvailability, inMeeting: Boolean = false): AvailabilityTone =
+      if (inMeeting) AvailabilityTone.ORANGE else availability.tone
   }
 }
 
@@ -44,8 +58,91 @@ enum class AppTab(val route: String) {
   RECEPTION("reception"),
   MY_VISITORS("my_visitors"),
   VISITOR_LOG("visitor_log"),
+  PR("pr"),
   ADMIN("admin"),
   PROFILE("profile"),
+}
+
+enum class PRChannel(val wireValue: String, val label: String) {
+  PRESS("Press / Media", "Press"),
+  EVENT("Event", "Event"),
+  SOCIAL("Social & Digital", "Social"),
+  VIP_OUTREACH("VIP Outreach", "VIP"),
+  FESTIVE_GIFTING("Festive Gifting", "Festive");
+
+  companion object {
+    fun fromWire(raw: String?): PRChannel =
+      entries.firstOrNull { it.wireValue.equals(raw?.trim(), ignoreCase = true) } ?: EVENT
+  }
+}
+
+enum class PRCampaignStatus(val wireValue: String, val label: String) {
+  PLANNED("Planned", "Planned"),
+  ACTIVE("Active", "Active"),
+  LIVE("Live", "Live"),
+  COMPLETED("Completed", "Done");
+
+  companion object {
+    fun fromWire(raw: String?): PRCampaignStatus =
+      entries.firstOrNull { it.wireValue.equals(raw?.trim(), ignoreCase = true) } ?: PLANNED
+  }
+}
+
+enum class PRContactTier(val wireValue: String, val label: String) {
+  VIP("VIP", "VIP"),
+  MEDIA("Media", "Media"),
+  PARTNER("Partner", "Partner");
+
+  companion object {
+    fun fromWire(raw: String?): PRContactTier =
+      entries.firstOrNull { it.wireValue.equals(raw?.trim(), ignoreCase = true) } ?: VIP
+  }
+}
+
+enum class PRFollowUpStatus(val wireValue: String, val label: String) {
+  WARM("Warm", "Warm"),
+  FOLLOW_UP_DUE("Follow-up Due", "Follow-up Due"),
+  SCHEDULED("Scheduled", "Scheduled"),
+  CONNECTED("Connected", "Connected");
+
+  companion object {
+    fun fromWire(raw: String?): PRFollowUpStatus =
+      entries.firstOrNull { it.wireValue.equals(raw?.trim(), ignoreCase = true) } ?: WARM
+  }
+}
+
+enum class PRGiftDirection(val wireValue: String, val label: String) {
+  SENT("Sent", "Sent"),
+  RECEIVED("Received", "Received");
+
+  companion object {
+    fun fromWire(raw: String?): PRGiftDirection =
+      entries.firstOrNull { it.wireValue.equals(raw?.trim(), ignoreCase = true) } ?: SENT
+  }
+}
+
+enum class PRGiftStatus(val wireValue: String, val label: String) {
+  PREPARED("Prepared", "Prepared"),
+  DISPATCHED("Dispatched", "Dispatched"),
+  DELIVERED("Delivered", "Delivered"),
+  ACKNOWLEDGED("Acknowledged", "Ack'd");
+
+  companion object {
+    fun fromWire(raw: String?): PRGiftStatus =
+      entries.firstOrNull { it.wireValue.equals(raw?.trim(), ignoreCase = true) } ?: PREPARED
+  }
+}
+
+enum class AppointmentStatus(val wireValue: String, val label: String) {
+  SCHEDULED("Scheduled", "Scheduled"),
+  CHECKED_IN("Checked in", "Arrived"),
+  COMPLETED("Completed", "Done"),
+  CANCELLED("Cancelled", "Cancelled");
+
+  companion object {
+    fun fromWire(raw: String?): AppointmentStatus =
+      entries.firstOrNull { it.wireValue.equals(raw?.trim(), ignoreCase = true) } ?: SCHEDULED
+  }
 }
 
 enum class AppThemeMode(val wireValue: String, val label: String) {
@@ -205,3 +302,117 @@ data class VisitorProfile(
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 )
+
+@Keep
+@IgnoreExtraProperties
+data class Appointment(
+  @DocumentId val id: String = "",
+  val visitorName: String = "",
+  val visitorMobile: String = "",
+  val visitorCompany: String = "",
+  val visitorEmail: String = "",
+  val purpose: String = "Meeting",
+  val location: String = "",
+  val scheduledDateIso: String = "",
+  val scheduledTimeLabel: String = "",
+  val scheduledAtMillis: Long = 0L,
+  val notes: String = "",
+  val hostStaffId: String = "",
+  val hostShownAs: String = "",
+  val hostEmail: String = "",
+  val hostCabin: String = "",
+  val status: String = AppointmentStatus.SCHEDULED.wireValue,
+  val bookedByRole: String = "",
+  val createdByUid: String = "",
+  val createdByEmail: String = "",
+  val officeOwnerUid: String = "",
+  val allowedReaderEmails: List<String> = emptyList(),
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null,
+) {
+  fun parsedStatus(): AppointmentStatus = AppointmentStatus.fromWire(status)
+}
+
+@Keep
+@IgnoreExtraProperties
+data class PRCampaign(
+  @DocumentId val id: String = "",
+  val title: String = "",
+  val channel: String = PRChannel.EVENT.wireValue,
+  val status: String = PRCampaignStatus.PLANNED.wireValue,
+  val targetDateLabel: String = "",
+  val location: String = "",
+  val audienceSummary: String = "",
+  val notes: String = "",
+  val ownerStaffId: String = "",
+  val ownerName: String = "",
+  val ownerEmail: String = "",
+  val createdByUid: String = "",
+  val createdByEmail: String = "",
+  val officeOwnerUid: String = "",
+  val allowedReaderEmails: List<String> = emptyList(),
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null,
+) {
+  fun parsedChannel(): PRChannel = PRChannel.fromWire(channel)
+  fun parsedStatus(): PRCampaignStatus = PRCampaignStatus.fromWire(status)
+}
+
+@Keep
+@IgnoreExtraProperties
+data class PRContact(
+  @DocumentId val id: String = "",
+  val name: String = "",
+  val organization: String = "",
+  val designation: String = "",
+  val tier: String = PRContactTier.VIP.wireValue,
+  val mobile: String = "",
+  val email: String = "",
+  val followUpStatus: String = PRFollowUpStatus.WARM.wireValue,
+  val nextFollowUpDate: String = "",
+  val photoUrl: String = "",
+  val dob: String = "",
+  val anniversaryDate: String = "",
+  val lastWishedYear: Long = 0L,
+  val specialGiftPreference: String = "",
+  val cityOrAddress: String = "",
+  val notes: String = "",
+  val ownerStaffId: String = "",
+  val ownerName: String = "",
+  val ownerEmail: String = "",
+  val createdByUid: String = "",
+  val createdByEmail: String = "",
+  val officeOwnerUid: String = "",
+  val allowedReaderEmails: List<String> = emptyList(),
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null,
+) {
+  fun parsedTier(): PRContactTier = PRContactTier.fromWire(tier)
+  fun parsedFollowUpStatus(): PRFollowUpStatus = PRFollowUpStatus.fromWire(followUpStatus)
+}
+
+@Keep
+@IgnoreExtraProperties
+data class PRGift(
+  @DocumentId val id: String = "",
+  val recipientOrSender: String = "",
+  val company: String = "",
+  val itemTitle: String = "",
+  val direction: String = PRGiftDirection.SENT.wireValue,
+  val status: String = PRGiftStatus.PREPARED.wireValue,
+  val occasion: String = "",
+  val dateLabel: String = "",
+  val notes: String = "",
+  val ownerStaffId: String = "",
+  val ownerName: String = "",
+  val ownerEmail: String = "",
+  val createdByUid: String = "",
+  val createdByEmail: String = "",
+  val officeOwnerUid: String = "",
+  val allowedReaderEmails: List<String> = emptyList(),
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null,
+) {
+  fun parsedDirection(): PRGiftDirection = PRGiftDirection.fromWire(direction)
+  fun parsedStatus(): PRGiftStatus = PRGiftStatus.fromWire(status)
+}

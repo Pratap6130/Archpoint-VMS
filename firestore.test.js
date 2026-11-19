@@ -515,7 +515,7 @@ test("Admin manages staff & past Done visits; Reception cannot modify staff; Hos
       })
   );
 
-  // Host can update own floor, cabin, otherLocation, requiredThings, notes, and availabilityStatus
+  // Host (and any active staff) can update own profile (name, designation, photoUrl, seating, requiredThings, notes, availabilityStatus)
   await assertSucceeds(
     hostDb
       .collection("offices")
@@ -523,12 +523,30 @@ test("Admin manages staff & past Done visits; Reception cannot modify staff; Hos
       .collection("staff")
       .doc("staff_amit")
       .update({
+        fullName: "Amit Khandelwal",
+        shownAs: "Amit Sir",
+        designation: "Principal Architect",
+        department: "Architecture",
+        photoUrl: "data:image/jpeg;base64,/9j/4AAQSkZJRg==",
         floor: "2nd Floor",
         cabin: "Amit Cabin",
         otherLocation: "Studio (3rd Floor)",
         requiredThings: "Blueprints & samples",
         notes: "Client days Tue & Sat in Conference (2nd Floor)",
         availabilityStatus: "Busy",
+        updatedAt: now,
+      })
+  );
+
+  // Host CANNOT escalate own role, email, or hostListed status
+  await assertFails(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("staff")
+      .doc("staff_amit")
+      .update({
+        role: "admin",
         updatedAt: now,
       })
   );
@@ -589,5 +607,405 @@ test("Admin manages staff & past Done visits; Reception cannot modify staff; Hos
       .collection("visitorProfiles")
       .where("allowedReaderEmails", "array-contains", HOST_EMAIL)
       .get()
+  );
+});
+
+test("PR module enforces Admin/Reception workspace visibility, Host owner-only privacy, and Admin-only delete", async () => {
+  await seedOffice();
+  const past = new Date(Date.now() - 2000);
+  const adminDb = verifiedCtx(ADMIN_UID, ADMIN_EMAIL).firestore();
+  const receptionDb = verifiedCtx(RECEPTION_UID, RECEPTION_EMAIL).firestore();
+  const hostDb = verifiedCtx(HOST_UID, HOST_EMAIL).firestore();
+  const otherHostDb = verifiedCtx(OTHER_HOST_UID, OTHER_HOST_EMAIL).firestore();
+  const outsiderDb = verifiedCtx(OUTSIDER_UID, OUTSIDER_EMAIL).firestore();
+
+  const amitCampaignPayload = {
+    title: "Jaipur Architecture Showcase",
+    channel: "Event",
+    status: "Active",
+    targetDateLabel: "24 Nov",
+    location: "Studio (3rd Floor)",
+    audienceSummary: "Luxury developers & press",
+    notes: "Prepare project portfolio",
+    ownerStaffId: "staff_amit",
+    ownerName: "Amit Sir",
+    ownerEmail: HOST_EMAIL,
+    createdByUid: RECEPTION_UID,
+    createdByEmail: RECEPTION_EMAIL,
+    officeOwnerUid: ADMIN_UID,
+    allowedReaderEmails: [ADMIN_EMAIL, RECEPTION_EMAIL, HOST_EMAIL],
+    createdAt: past,
+    updatedAt: past,
+  };
+
+  // Reception creates a PR campaign assigned to Amit Sir
+  await assertSucceeds(
+    receptionDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prCampaigns")
+      .doc("pr_camp_1")
+      .set(amitCampaignPayload)
+  );
+
+  // Admin and Reception can read office PR campaigns via allowedReaderEmails
+  await assertSucceeds(
+    adminDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prCampaigns")
+      .where("allowedReaderEmails", "array-contains", ADMIN_EMAIL)
+      .get()
+  );
+
+  // Host (Amit) can query ONLY his own PR campaigns
+  await assertSucceeds(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prCampaigns")
+      .where("ownerEmail", "==", HOST_EMAIL)
+      .get()
+  );
+
+  // Other Host (Neha) CANNOT read Amit's campaign or list unfiltered global campaigns
+  await assertFails(
+    otherHostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prCampaigns")
+      .doc("pr_camp_1")
+      .get()
+  );
+  await assertFails(
+    otherHostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prCampaigns")
+      .where("ownerEmail", "==", HOST_EMAIL)
+      .get()
+  );
+  await assertFails(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prCampaigns")
+      .where("allowedReaderEmails", "array-contains", HOST_EMAIL)
+      .get()
+  );
+
+  // Host CANNOT assign a new PR contact to another host's email
+  const contactBase = {
+    name: "Ananya Verma",
+    organization: "Architectural Digest India",
+    designation: "Senior Editor",
+    tier: "Media",
+    mobile: "9811002233",
+    email: "ananya@adindia.in",
+    followUpStatus: "Follow-up Due",
+    nextFollowUpDate: "Tomorrow",
+    notes: "Send high-res renders",
+    ownerStaffId: "staff_amit",
+    ownerName: "Amit Sir",
+    ownerEmail: HOST_EMAIL,
+    createdByUid: HOST_UID,
+    createdByEmail: HOST_EMAIL,
+    officeOwnerUid: ADMIN_UID,
+    allowedReaderEmails: [ADMIN_EMAIL, RECEPTION_EMAIL, HOST_EMAIL],
+    createdAt: past,
+    updatedAt: past,
+  };
+  await assertFails(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prContacts")
+      .doc("pr_contact_hack")
+      .set({
+        ...contactBase,
+        ownerEmail: OTHER_HOST_EMAIL,
+      })
+  );
+
+  // Host CAN create & update a PR contact owned by themselves
+  await assertSucceeds(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prContacts")
+      .doc("pr_contact_1")
+      .set(contactBase)
+  );
+  await assertSucceeds(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prContacts")
+      .doc("pr_contact_1")
+      .update({
+        followUpStatus: "Connected",
+        updatedAt: new Date(Date.now() - 1000),
+      })
+  );
+
+  // Host CANNOT reassign ownership or alter allowedReaderEmails on update
+  await assertFails(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prContacts")
+      .doc("pr_contact_1")
+      .update({
+        ownerEmail: OTHER_HOST_EMAIL,
+        updatedAt: new Date(Date.now() - 900),
+      })
+  );
+
+  // Admin creates PR gift; Reception & Host cannot delete PR items; Admin CAN delete
+  await assertSucceeds(
+    adminDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prGifts")
+      .doc("pr_gift_1")
+      .set({
+        recipientOrSender: "Rakesh Mittal",
+        company: "Mittal Group",
+        itemTitle: "ArchPoint Studio Monograph + Brass Lamp",
+        direction: "Sent",
+        status: "Prepared",
+        occasion: "Diwali gift",
+        dateLabel: "Today",
+        notes: "Include handwritten note",
+        ownerStaffId: "staff_amit",
+        ownerName: "Amit Sir",
+        ownerEmail: HOST_EMAIL,
+        createdByUid: ADMIN_UID,
+        createdByEmail: ADMIN_EMAIL,
+        officeOwnerUid: ADMIN_UID,
+        allowedReaderEmails: [ADMIN_EMAIL, RECEPTION_EMAIL, HOST_EMAIL],
+        createdAt: past,
+        updatedAt: past,
+      })
+  );
+
+  await assertFails(
+    receptionDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prGifts")
+      .doc("pr_gift_1")
+      .delete()
+  );
+  await assertFails(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prGifts")
+      .doc("pr_gift_1")
+      .delete()
+  );
+  await assertFails(
+    outsiderDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prGifts")
+      .doc("pr_gift_1")
+      .get()
+  );
+  await assertSucceeds(
+    adminDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prGifts")
+      .doc("pr_gift_1")
+      .delete()
+  );
+
+  // Host CAN add PR contact with profile photo, birthday, special gift preference, and wish tracking
+  await assertSucceeds(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prContacts")
+      .doc("pr_contact_photo")
+      .set({
+        ...contactBase,
+        photoUrl: "data:image/jpeg;base64,/9j/4AAQSkZJRg==",
+        dob: "04/12/1988",
+        anniversaryDate: "18 Nov",
+        lastWishedYear: 2026,
+        specialGiftPreference: "Sugar-free festive hamper + Monograph",
+        cityOrAddress: "C-Scheme, Jaipur",
+      })
+  );
+
+  // Oversized PR contact photo (>120000 chars) is rejected
+  await assertFails(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("prContacts")
+      .doc("pr_contact_big_photo")
+      .set({
+        ...contactBase,
+        photoUrl: "a".repeat(120001),
+      })
+  );
+});
+
+test("Appointment booking allows Host self-booking and Reception/Admin office-wide booking with strict host isolation", async () => {
+  await seedOffice();
+  const past = new Date(Date.now() - 2000);
+  const adminDb = verifiedCtx(ADMIN_UID, ADMIN_EMAIL).firestore();
+  const receptionDb = verifiedCtx(RECEPTION_UID, RECEPTION_EMAIL).firestore();
+  const hostDb = verifiedCtx(HOST_UID, HOST_EMAIL).firestore();
+  const otherHostDb = verifiedCtx(OTHER_HOST_UID, OTHER_HOST_EMAIL).firestore();
+  const outsiderDb = verifiedCtx(OUTSIDER_UID, OUTSIDER_EMAIL).firestore();
+
+  const amitApptPayload = {
+    visitorName: "Vikram Rathore",
+    visitorMobile: "9829001122",
+    visitorCompany: "Rathore Heritage Homes",
+    visitorEmail: "vikram@rathore.in",
+    purpose: "Project Brief",
+    location: "Amit Cabin · 2nd Floor",
+    scheduledDateIso: "2026-11-20",
+    scheduledTimeLabel: "03:30 PM",
+    scheduledAtMillis: Date.now() + 86400000,
+    notes: "Bring elevation renders",
+    hostStaffId: "staff_amit",
+    hostShownAs: "Amit Sir",
+    hostEmail: HOST_EMAIL,
+    hostCabin: "Amit cabin, 2nd",
+    status: "Scheduled",
+    bookedByRole: "reception",
+    createdByUid: RECEPTION_UID,
+    createdByEmail: RECEPTION_EMAIL,
+    officeOwnerUid: ADMIN_UID,
+    allowedReaderEmails: [ADMIN_EMAIL, RECEPTION_EMAIL, HOST_EMAIL],
+    createdAt: past,
+    updatedAt: past,
+  };
+
+  // Reception can book an appointment for Amit
+  await assertSucceeds(
+    receptionDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_1")
+      .set(amitApptPayload)
+  );
+
+  // Amit (Host) can book an appointment ONLY for himself
+  await assertSucceeds(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_host_self")
+      .set({
+        ...amitApptPayload,
+        bookedByRole: "host",
+        createdByUid: HOST_UID,
+        createdByEmail: HOST_EMAIL,
+      })
+  );
+
+  // Host CANNOT book an appointment under another host's email
+  await assertFails(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_host_spoof")
+      .set({
+        ...amitApptPayload,
+        hostEmail: OTHER_HOST_EMAIL,
+        bookedByRole: "host",
+        createdByUid: HOST_UID,
+        createdByEmail: HOST_EMAIL,
+      })
+  );
+
+  // Amit can query his own appointments
+  await assertSucceeds(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .where("hostEmail", "==", HOST_EMAIL)
+      .get()
+  );
+
+  // Neha (other host) CANNOT read Amit's appointment or query Amit's appointments
+  await assertFails(
+    otherHostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_1")
+      .get()
+  );
+  await assertFails(
+    otherHostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .where("hostEmail", "==", HOST_EMAIL)
+      .get()
+  );
+
+  // Outsider cannot read
+  await assertFails(
+    outsiderDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_1")
+      .get()
+  );
+
+  // Reception marks appt_1 Checked in, and Amit marks appt_host_self Completed
+  await assertSucceeds(
+    receptionDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_1")
+      .update({
+        status: "Checked in",
+        updatedAt: new Date(Date.now() - 500),
+      })
+  );
+  await assertSucceeds(
+    hostDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_host_self")
+      .update({
+        status: "Completed",
+        updatedAt: new Date(Date.now() - 400),
+      })
+  );
+
+  // Only Admin can delete appointments; Reception and Host cannot
+  await assertFails(
+    receptionDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_1")
+      .delete()
+  );
+  await assertSucceeds(
+    adminDb
+      .collection("offices")
+      .doc(OFFICE_ID)
+      .collection("appointments")
+      .doc("appt_1")
+      .delete()
   );
 });

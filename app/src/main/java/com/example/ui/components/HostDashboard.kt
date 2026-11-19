@@ -10,6 +10,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,6 +42,8 @@ import androidx.compose.material.icons.rounded.Chair
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.Clear
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.EventAvailable
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MeetingRoom
 import androidx.compose.material.icons.rounded.NotificationsActive
@@ -81,6 +84,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.data.model.Appointment
+import com.example.data.model.AppointmentStatus
+import com.example.data.model.AvailabilityTone
 import com.example.data.model.HostAvailability
 import com.example.data.model.StaffMember
 import com.example.data.model.Visit
@@ -96,6 +102,7 @@ import java.util.Date
 
 private enum class HostNotificationSection {
   LIVE_NOTIFICATIONS,
+  UPCOMING_APPTS,
   MY_CLIENTS,
   MY_HISTORY,
 }
@@ -120,11 +127,27 @@ fun HostDashboard(
   userEmail: String,
   nowMillis: Long,
   inFlightVisitIds: Set<String> = emptySet(),
+  appointments: List<Appointment> = emptyList(),
+  isBusy: Boolean = false,
   onUpdateAvailability: (HostAvailability) -> Unit,
   onSendIn: (Visit, String) -> Unit,
   onSendWaitNote: (Visit, String) -> Unit,
   onNotToday: (Visit, String) -> Unit,
   onMeetingDone: (Visit) -> Unit,
+  onSaveAppointment: (
+    existing: Appointment?,
+    visitorName: String,
+    visitorMobile: String,
+    visitorCompany: String,
+    visitorEmail: String,
+    purpose: String,
+    location: String,
+    scheduledDateIso: String,
+    scheduledTimeLabel: String,
+    notes: String,
+    assignedHostStaff: StaffMember?,
+  ) -> Unit = { _, _, _, _, _, _, _, _, _, _, _ -> },
+  onUpdateAppointmentStatus: (Appointment, AppointmentStatus) -> Unit = { _, _ -> },
   modifier: Modifier = Modifier,
 ) {
   val status = archPointStatusColors()
@@ -190,6 +213,26 @@ fun HostDashboard(
     } ?: 0L
 
   val activeNotificationsCount = myWaiting.size + myInMeeting.size
+  val myAppointments =
+    remember(appointments, cleanEmail, currentStaff?.id) {
+      MainViewModel.filterHostSpecificAppointments(
+        appointments = appointments,
+        userEmail = cleanEmail,
+        staffId = currentStaff?.id,
+      )
+    }
+  val upcomingAppts =
+    remember(myAppointments, nowMillis / 60_000L) {
+      MainViewModel.upcomingScheduledAppointments(myAppointments, nowMillis)
+    }
+  val pastAppts =
+    remember(myAppointments, upcomingAppts) {
+      val upcomingIds = upcomingAppts.map { it.id }.toSet()
+      myAppointments
+        .filter { it.id !in upcomingIds }
+        .sortedByDescending { it.scheduledAtMillis }
+        .take(15)
+    }
   val myClients =
     remember(myVisits, cleanEmail, currentStaff?.id) {
       MainViewModel.buildHostClients(
@@ -203,6 +246,8 @@ fun HostDashboard(
   var historyQuery by remember { mutableStateOf("") }
   var historyFilter by remember { mutableStateOf(HostHistoryFilter.ALL) }
   var actionSheet by remember { mutableStateOf<HostActionSheetState?>(null) }
+  var showAppointmentSheet by remember { mutableStateOf(false) }
+  var editingAppointment by remember { mutableStateOf<Appointment?>(null) }
 
   val filteredClients =
     remember(myClients, clientsQuery) {
@@ -279,6 +324,35 @@ fun HostDashboard(
     null -> Unit
   }
 
+  if (showAppointmentSheet) {
+    BookAppointmentBottomSheet(
+      existing = editingAppointment,
+      assignableHosts = listOfNotNull(currentStaff),
+      isHostOnly = true,
+      currentStaff = currentStaff,
+      isBusy = isBusy,
+      onDismiss = {
+        showAppointmentSheet = false
+        editingAppointment = null
+      },
+      onSave = { vName, vMob, vComp, vEmail, purpose, loc, dateIso, timeLbl, notes, host ->
+        onSaveAppointment(
+          editingAppointment,
+          vName,
+          vMob,
+          vComp,
+          vEmail,
+          purpose,
+          loc,
+          dateIso,
+          timeLbl,
+          notes,
+          host,
+        )
+      },
+    )
+  }
+
   Box(
     modifier = modifier.fillMaxSize().testTag("host_dashboard_root"),
     contentAlignment = Alignment.TopCenter,
@@ -329,17 +403,17 @@ fun HostDashboard(
                   )
                 Triple(
                   "In meeting · ${mins}m",
-                  status.meetingContainer,
-                  status.meetingOnContainer,
+                  status.busyContainer,
+                  status.busyOnContainer,
                 )
               } else {
                 when (myAvailability) {
                   HostAvailability.AVAILABLE ->
-                    Triple("Available", status.freeContainer, status.freeOnContainer)
+                    Triple("Free", status.freeContainer, status.freeOnContainer)
                   HostAvailability.BUSY ->
-                    Triple("Busy", status.waitingContainer, status.waitingOnContainer)
+                    Triple("Busy", status.busyContainer, status.busyOnContainer)
                   HostAvailability.AWAY ->
-                    Triple("Away", status.deniedContainer, status.deniedOnContainer)
+                    Triple("Away", status.awayContainer, status.awayOnContainer)
                 }
               }
             StatusPill(text = liveBadgeText, containerColor = liveBg, contentColor = liveFg)
@@ -388,7 +462,7 @@ fun HostDashboard(
             }
           }
 
-          // Self-service host availability status toggle (instant optimistic response)
+          // Self-service host availability status toggle (Green = Free, Orange = Busy, Red = Away)
           if (currentStaff != null) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
               Text(
@@ -396,20 +470,56 @@ fun HostDashboard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
               )
-              GlassSegmentedControl(
-                options =
-                  listOf(
-                    HostAvailability.AVAILABLE to HostAvailability.AVAILABLE.label,
-                    HostAvailability.BUSY to HostAvailability.BUSY.label,
-                    HostAvailability.AWAY to HostAvailability.AWAY.label,
-                  ),
-                selected = myAvailability,
-                onSelect = { nextStatus ->
-                  haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                  onUpdateAvailability(nextStatus)
-                },
-                tagPrefix = "host_status",
-              )
+              GlassInnerSurface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+              ) {
+                Row(
+                  modifier = Modifier.fillMaxWidth().padding(4.dp),
+                  horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                  HostAvailability.entries.forEach { option ->
+                    val isSelected = option == myAvailability
+                    val (accent, pillBg, pillFg) = status.pillColors(option.tone)
+                    Surface(
+                      modifier =
+                        Modifier.weight(1f)
+                          .clip(RoundedCornerShape(12.dp))
+                          .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onUpdateAvailability(option)
+                          }
+                          .testTag("host_status_${option.label}"),
+                      shape = RoundedCornerShape(12.dp),
+                      color = if (isSelected) pillBg else Color.Transparent,
+                      border =
+                        if (isSelected) BorderStroke(1.25.dp, accent.copy(alpha = 0.85f))
+                        else null,
+                    ) {
+                      Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                      ) {
+                        Box(
+                          modifier =
+                            Modifier.size(9.dp)
+                              .clip(CircleShape)
+                              .background(accent)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                          text = option.label,
+                          style = MaterialTheme.typography.labelLarge,
+                          color = if (isSelected) pillFg else MaterialTheme.colorScheme.onSurfaceVariant,
+                          fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                          maxLines = 1,
+                        )
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
 
@@ -526,16 +636,35 @@ fun HostDashboard(
               modifier = Modifier.weight(1f),
             )
           }
+
+          OutlinedButton(
+            onClick = {
+              editingAppointment = null
+              showAppointmentSheet = true
+            },
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().height(48.dp).testTag("host_book_appointment_button"),
+          ) {
+            Icon(Icons.Rounded.EventAvailable, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+              text =
+                if (upcomingAppts.isEmpty()) "Book Upcoming Appointment"
+                else "Book Appointment (${upcomingAppts.size} upcoming)",
+              style = MaterialTheme.typography.labelLarge,
+            )
+          }
         }
       }
 
-      // 2. Host-Only Feed Selector (Live Visitor Notifications vs. My Clients vs. My History)
+      // 2. Host-Only Feed Selector (Live Notifications vs. Upcoming Appointments vs. Clients vs. History)
       item(key = "feed_selector") {
         GlassSegmentedControl(
           options =
             listOf(
               HostNotificationSection.LIVE_NOTIFICATIONS to
                 if (activeNotificationsCount > 0) "Live ($activeNotificationsCount)" else "Live",
+              HostNotificationSection.UPCOMING_APPTS to "Appts (${upcomingAppts.size})",
               HostNotificationSection.MY_CLIENTS to "Clients (${myClients.size})",
               HostNotificationSection.MY_HISTORY to "History (${myAllCompleted.size})",
             ),
@@ -549,6 +678,85 @@ fun HostDashboard(
       }
 
       if (feedSection == HostNotificationSection.LIVE_NOTIFICATIONS) {
+        if (upcomingAppts.isNotEmpty()) {
+          item(key = "upcoming_appt_preview") {
+            GlassInnerSurface(
+              modifier = Modifier.fillMaxWidth(),
+              borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+            ) {
+              Column(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                      imageVector = Icons.Rounded.EventAvailable,
+                      contentDescription = null,
+                      tint = MaterialTheme.colorScheme.primary,
+                      modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                      text = "UPCOMING FOR YOU (${upcomingAppts.size})",
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.primary,
+                    )
+                  }
+                  TextButton(
+                    onClick = { feedSection = HostNotificationSection.UPCOMING_APPTS },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                  ) {
+                    Text("View all", style = MaterialTheme.typography.labelMedium)
+                  }
+                }
+                upcomingAppts.take(2).forEach { appt ->
+                  val dayLabel = DeskFormatters.formatAppointmentDayLabel(appt.scheduledDateIso, nowMillis)
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                  ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                      Text(
+                        text = appt.visitorName,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                      val sub =
+                        listOfNotNull(
+                          appt.visitorCompany.takeIf { it.isNotBlank() },
+                          appt.purpose.takeIf { it.isNotBlank() },
+                          appt.location.takeIf { it.isNotBlank() },
+                        ).joinToString(" · ")
+                      if (sub.isNotBlank()) {
+                        Text(
+                          text = sub,
+                          style = MaterialTheme.typography.bodySmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          maxLines = 1,
+                          overflow = TextOverflow.Ellipsis,
+                        )
+                      }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    StatusPill(
+                      text = "$dayLabel · ${appt.scheduledTimeLabel}",
+                      containerColor = MaterialTheme.colorScheme.primaryContainer,
+                      contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+
         if (myWaiting.isNotEmpty()) {
           item(key = "waiting_section_header") {
             Text(
@@ -638,6 +846,121 @@ fun HostDashboard(
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                   textAlign = TextAlign.Center,
                 )
+              }
+            }
+          }
+        }
+      } else if (feedSection == HostNotificationSection.UPCOMING_APPTS) {
+        item(key = "appts_header") {
+          GlassCard(contentPadding = PaddingValues(14.dp)) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  text = "MY UPCOMING APPOINTMENTS (${upcomingAppts.size})",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                  text = "Visible only to you and Reception for arrival check-in",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+              Spacer(Modifier.width(8.dp))
+              Button(
+                onClick = {
+                  editingAppointment = null
+                  showAppointmentSheet = true
+                },
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                modifier = Modifier.height(44.dp).testTag("host_appts_tab_book_button"),
+              ) {
+                Icon(Icons.Rounded.EventAvailable, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Book")
+              }
+            }
+          }
+        }
+
+        if (upcomingAppts.isEmpty()) {
+          item(key = "appts_empty") {
+            GlassCard(contentPadding = PaddingValues(20.dp)) {
+              Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                Text("No upcoming appointments", style = MaterialTheme.typography.titleMedium)
+                Text(
+                  "Schedule a client or vendor visit so Reception sees the booking when they arrive.",
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  textAlign = TextAlign.Center,
+                )
+              }
+            }
+          }
+        } else {
+          items(
+            items = upcomingAppts,
+            key = { appt -> "appt_${appt.id}" },
+          ) { appt ->
+            HostAppointmentCard(
+              appointment = appt,
+              nowMillis = nowMillis,
+              onDialVisitor = { dialVisitor(appt.visitorMobile) },
+              onReschedule = {
+                editingAppointment = appt
+                showAppointmentSheet = true
+              },
+              onMarkCompleted = { onUpdateAppointmentStatus(appt, AppointmentStatus.COMPLETED) },
+              onCancelAppointment = { onUpdateAppointmentStatus(appt, AppointmentStatus.CANCELLED) },
+              modifier = Modifier.animateItem(),
+            )
+          }
+        }
+
+        if (pastAppts.isNotEmpty()) {
+          item(key = "past_appts_header") {
+            Text(
+              text = "RECENT / PAST BOOKINGS (${pastAppts.size})",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+          items(
+            items = pastAppts,
+            key = { appt -> "past_appt_${appt.id}" },
+          ) { appt ->
+            val st = appt.parsedStatus()
+            val (bg, fg) =
+              when (st) {
+                AppointmentStatus.CHECKED_IN -> status.meetingContainer to status.meetingOnContainer
+                AppointmentStatus.COMPLETED -> status.freeContainer to status.freeOnContainer
+                AppointmentStatus.CANCELLED -> status.deniedContainer to status.deniedOnContainer
+                AppointmentStatus.SCHEDULED -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
+              }
+            GlassInnerSurface(modifier = Modifier.fillMaxWidth()) {
+              Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+              ) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(appt.visitorName, style = MaterialTheme.typography.titleSmall)
+                  Text(
+                    text = "${DeskFormatters.formatAppointmentDayLabel(appt.scheduledDateIso, nowMillis)} · ${appt.scheduledTimeLabel} · ${appt.purpose}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+                StatusPill(text = st.label, containerColor = bg, contentColor = fg)
               }
             }
           }
@@ -1458,5 +1781,129 @@ private fun HostHistoryNotificationRow(
       containerColor = if (isDenied) status.deniedContainer else status.freeContainer,
       contentColor = if (isDenied) status.deniedOnContainer else status.freeOnContainer,
     )
+  }
+}
+
+@Composable
+private fun HostAppointmentCard(
+  appointment: Appointment,
+  nowMillis: Long,
+  onDialVisitor: () -> Unit,
+  onReschedule: () -> Unit,
+  onMarkCompleted: () -> Unit,
+  onCancelAppointment: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val dayLabel = DeskFormatters.formatAppointmentDayLabel(appointment.scheduledDateIso, nowMillis)
+  val isToday = dayLabel == "Today"
+  val hasDialablePhone =
+    appointment.visitorMobile.filter { it.isDigit() }.length >= 10 &&
+      appointment.visitorMobile != "919999999999"
+
+  GlassCard(
+    modifier = modifier.testTag("host_appointment_card_${appointment.id}"),
+    contentPadding = PaddingValues(14.dp),
+    borderBrush =
+      if (isToday) {
+        Brush.linearGradient(
+          listOf(ArchAmberBright.copy(alpha = 0.7f), ArchAmberBright.copy(alpha = 0.25f))
+        )
+      } else {
+        null
+      },
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        StatusPill(
+          text = "$dayLabel · ${appointment.scheduledTimeLabel}",
+          containerColor =
+            if (isToday) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant,
+          contentColor =
+            if (isToday) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        StatusPill(
+          text = appointment.purpose.ifBlank { "Meeting" },
+          containerColor = MaterialTheme.colorScheme.secondaryContainer,
+          contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+      }
+      if (hasDialablePhone) {
+        IconButton(
+          onClick = onDialVisitor,
+          modifier = Modifier.size(48.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.Call,
+            contentDescription = "Call ${appointment.visitorName}",
+            tint = MaterialTheme.colorScheme.primary,
+          )
+        }
+      }
+    }
+
+    Text(
+      text = appointment.visitorName,
+      style = MaterialTheme.typography.titleMedium,
+      fontWeight = FontWeight.Bold,
+    )
+
+    val sub =
+      listOfNotNull(
+        appointment.visitorCompany.takeIf { it.isNotBlank() },
+        appointment.location.takeIf { it.isNotBlank() },
+      ).joinToString(" · ")
+    if (sub.isNotBlank()) {
+      Text(
+        text = sub,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+
+    if (appointment.notes.isNotBlank()) {
+      Text(
+        text = "Notes: ${appointment.notes}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      OutlinedButton(
+        onClick = onReschedule,
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        modifier = Modifier.weight(1f).height(42.dp).testTag("host_appt_edit_${appointment.id}"),
+      ) {
+        Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(4.dp))
+        Text("Reschedule", maxLines = 1)
+      }
+      OutlinedButton(
+        onClick = onMarkCompleted,
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        modifier = Modifier.weight(0.9f).height(42.dp).testTag("host_appt_done_${appointment.id}"),
+      ) {
+        Text("Done", maxLines = 1)
+      }
+      OutlinedButton(
+        onClick = onCancelAppointment,
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        modifier = Modifier.weight(0.9f).height(42.dp).testTag("host_appt_cancel_${appointment.id}"),
+      ) {
+        Text("Cancel", maxLines = 1)
+      }
+    }
   }
 }

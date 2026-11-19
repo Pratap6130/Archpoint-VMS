@@ -4,16 +4,26 @@ import android.content.Context
 import com.example.R
 import com.example.data.firebase.OperationType
 import com.example.data.firebase.handleFirestoreError
+import com.example.data.model.Appointment
+import com.example.data.model.AppointmentStatus
 import com.example.data.model.ArchPointSeedData
 import com.example.data.model.HostAvailability
 import com.example.data.model.Office
 import com.example.data.model.OfficeMembership
+import com.example.data.model.PRCampaign
+import com.example.data.model.PRCampaignStatus
+import com.example.data.model.PRContact
+import com.example.data.model.PRFollowUpStatus
+import com.example.data.model.PRGift
+import com.example.data.model.PRGiftStatus
 import com.example.data.model.StaffMember
 import com.example.data.model.StaffRole
 import com.example.data.model.Visit
 import com.example.data.model.VisitReason
 import com.example.data.model.VisitStatus
 import com.example.data.model.VisitorProfile
+import com.example.util.DeskFormatters
+import com.example.util.StaffPhotoCodec
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
@@ -262,6 +272,98 @@ class VisitorDeskRepository(
         .map { snap ->
           snap.toObjects(VisitorProfile::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
             .sortedByDescending { it.updatedAt?.toDate()?.time ?: 0L }
+        }
+        .withFirestoreLogging(OperationType.LIST, path, uid)
+    )
+  }
+
+  fun observePrCampaigns(
+    officeId: String,
+    userEmail: String,
+    hostOnly: Boolean,
+  ): Flow<List<PRCampaign>> = flow {
+    val uid = requireUserId()
+    val cleanEmail = userEmail.trim().lowercase()
+    val path = "offices/$officeId/prCampaigns"
+    val base = db.collection("offices").document(officeId).collection("prCampaigns")
+    val query =
+      if (hostOnly) base.whereEqualTo("ownerEmail", cleanEmail)
+      else base.whereArrayContains("allowedReaderEmails", cleanEmail)
+    emitAll(
+      query.snapshots()
+        .map { snap ->
+          snap.toObjects(PRCampaign::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            .sortedByDescending { it.updatedAt?.toDate()?.time ?: 0L }
+        }
+        .withFirestoreLogging(OperationType.LIST, path, uid)
+    )
+  }
+
+  fun observePrContacts(
+    officeId: String,
+    userEmail: String,
+    hostOnly: Boolean,
+  ): Flow<List<PRContact>> = flow {
+    val uid = requireUserId()
+    val cleanEmail = userEmail.trim().lowercase()
+    val path = "offices/$officeId/prContacts"
+    val base = db.collection("offices").document(officeId).collection("prContacts")
+    val query =
+      if (hostOnly) base.whereEqualTo("ownerEmail", cleanEmail)
+      else base.whereArrayContains("allowedReaderEmails", cleanEmail)
+    emitAll(
+      query.snapshots()
+        .map { snap ->
+          snap.toObjects(PRContact::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            .sortedByDescending { it.updatedAt?.toDate()?.time ?: 0L }
+        }
+        .withFirestoreLogging(OperationType.LIST, path, uid)
+    )
+  }
+
+  fun observePrGifts(
+    officeId: String,
+    userEmail: String,
+    hostOnly: Boolean,
+  ): Flow<List<PRGift>> = flow {
+    val uid = requireUserId()
+    val cleanEmail = userEmail.trim().lowercase()
+    val path = "offices/$officeId/prGifts"
+    val base = db.collection("offices").document(officeId).collection("prGifts")
+    val query =
+      if (hostOnly) base.whereEqualTo("ownerEmail", cleanEmail)
+      else base.whereArrayContains("allowedReaderEmails", cleanEmail)
+    emitAll(
+      query.snapshots()
+        .map { snap ->
+          snap.toObjects(PRGift::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            .sortedByDescending { it.updatedAt?.toDate()?.time ?: 0L }
+        }
+        .withFirestoreLogging(OperationType.LIST, path, uid)
+    )
+  }
+
+  fun observeAppointments(
+    officeId: String,
+    userEmail: String,
+    hostOnly: Boolean,
+  ): Flow<List<Appointment>> = flow {
+    val uid = requireUserId()
+    val cleanEmail = userEmail.trim().lowercase()
+    val path = "offices/$officeId/appointments"
+    val base = db.collection("offices").document(officeId).collection("appointments")
+    val query =
+      if (hostOnly) base.whereEqualTo("hostEmail", cleanEmail)
+      else base.whereArrayContains("allowedReaderEmails", cleanEmail)
+    emitAll(
+      query.snapshots()
+        .map { snap ->
+          snap.toObjects(Appointment::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            .sortedWith(
+              compareBy<Appointment> { it.scheduledAtMillis }
+                .thenBy { it.scheduledDateIso }
+                .thenBy { it.scheduledTimeLabel }
+            )
         }
         .withFirestoreLogging(OperationType.LIST, path, uid)
     )
@@ -719,6 +821,60 @@ class VisitorDeskRepository(
     }
   }
 
+  suspend fun updateOwnProfile(
+    officeId: String,
+    staffId: String,
+    fullName: String,
+    shownAs: String,
+    designation: String,
+    department: String,
+    photoUrl: String,
+    floor: String,
+    cabin: String,
+    otherLocation: String,
+    requiredThings: String,
+    notes: String,
+  ): Result<Unit> {
+    val path = "offices/$officeId/staff/$staffId"
+    return try {
+      val uid = requireUserId()
+      require(officeId.isNotBlank() && staffId.isNotBlank()) { "Staff profile ID is missing." }
+      val cleanFullName = fullName.trim().take(80)
+      require(cleanFullName.isNotEmpty()) { "Full name is required." }
+      val cleanShownAs =
+        shownAs.trim().take(60).ifBlank { cleanFullName.split(" ").firstOrNull() ?: "Staff" }
+      val cleanPhotoUrl =
+        photoUrl.trim().take(com.example.util.StaffPhotoCodec.MAX_PHOTO_DATA_URI_CHARS)
+      db.collection("offices")
+        .document(officeId)
+        .collection("staff")
+        .document(staffId)
+        .update(
+          mapOf(
+            "uid" to uid,
+            "fullName" to cleanFullName,
+            "shownAs" to cleanShownAs,
+            "designation" to designation.trim().take(80),
+            "department" to department.trim().take(80),
+            "photoUrl" to cleanPhotoUrl,
+            "floor" to floor.trim().take(40),
+            "cabin" to cabin.trim().take(60),
+            "otherLocation" to otherLocation.trim().take(120),
+            "requiredThings" to requiredThings.trim().take(200),
+            "notes" to notes.trim().take(240),
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
   suspend fun updateOwnSeatingAndRequirements(
     officeId: String,
     staffId: String,
@@ -932,6 +1088,147 @@ class VisitorDeskRepository(
     }
   }
 
+  suspend fun checkInFromAppointment(
+    office: Office,
+    appointment: Appointment,
+    host: StaffMember,
+    existingProfile: VisitorProfile?,
+  ): Result<String> {
+    val cleanMobile =
+      appointment.visitorMobile.filter { it.isDigit() }.take(20).ifBlank { "919999999999" }
+    val cleanName = appointment.visitorName.trim().take(100)
+    val cleanCompany = appointment.visitorCompany.trim().take(100)
+    val cleanVisitorEmail = appointment.visitorEmail.trim().lowercase().take(120)
+    val cleanReason = appointment.purpose.trim().take(60).ifBlank { "Meeting" }
+    val cleanRemark =
+      listOfNotNull(
+        "Booked ${appointment.scheduledTimeLabel}".takeIf { appointment.scheduledTimeLabel.isNotBlank() },
+        appointment.location.takeIf { it.isNotBlank() },
+        appointment.notes.takeIf { it.isNotBlank() },
+      ).joinToString(" · ").take(300)
+
+    val visitId = "visit_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+    val path = "offices/${office.id}/visits/$visitId"
+    return try {
+      val uid = requireUserId()
+      val actorEmail = requireVerifiedEmail()
+      require(appointment.id.isNotBlank()) { "Appointment ID missing." }
+      require(cleanName.isNotEmpty()) { "Visitor name is required." }
+      require(host.id.isNotBlank()) { "Assigned host not found." }
+
+      val nextVisitNumber = (existingProfile?.visitCount ?: 0L) + 1L
+      val cleanHostEmail = host.email.trim().lowercase()
+      val visitReaders =
+        (if (cleanHostEmail.isNotBlank()) office.receptionAdminEmails + cleanHostEmail else office.receptionAdminEmails)
+          .map { it.trim().lowercase() }
+          .filter { it.isNotBlank() }
+          .distinct()
+          .take(100)
+      val profileReaders = office.receptionAdminEmails
+        .map { it.trim().lowercase() }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .take(100)
+      val hostLocation = appointment.location.ifBlank {
+        host.formattedSeating().ifBlank { host.cabin }
+      }.take(100)
+
+      val batch = db.batch()
+      val visitRef = db.collection("offices").document(office.id).collection("visits").document(visitId)
+      batch.set(
+        visitRef,
+        mapOf(
+          "visitorName" to cleanName,
+          "visitorMobile" to cleanMobile,
+          "visitorCompany" to cleanCompany,
+          "visitorEmail" to cleanVisitorEmail,
+          "visitorType" to cleanReason,
+          "visitorJobProfile" to (existingProfile?.visitorJobProfile ?: "").take(100),
+          "remark" to cleanRemark,
+          "reason" to cleanReason,
+          "hostStaffId" to host.id,
+          "hostShownAs" to host.shownAs.ifBlank { host.fullName }.take(60),
+          "hostEmail" to cleanHostEmail,
+          "hostCabin" to hostLocation,
+          "visitNumber" to nextVisitNumber,
+          "status" to VisitStatus.WAITING.wireValue,
+          "waitNote" to "",
+          "remindedCount" to 0L,
+          "arrivedAt" to FieldValue.serverTimestamp(),
+          "waitStartedAt" to FieldValue.serverTimestamp(),
+          "createdByUid" to uid,
+          "createdByEmail" to actorEmail,
+          "officeOwnerUid" to office.ownerUid,
+          "allowedReaderEmails" to visitReaders,
+          "updatedAt" to FieldValue.serverTimestamp(),
+        ),
+      )
+
+      if (cleanMobile != "919999999999") {
+        val profileDocId = existingProfile?.id?.ifBlank { cleanMobile } ?: cleanMobile
+        val profileRef =
+          db.collection("offices").document(office.id).collection("visitorProfiles").document(profileDocId)
+        if (existingProfile == null) {
+          batch.set(
+            profileRef,
+            mapOf(
+              "mobile" to cleanMobile,
+              "name" to cleanName,
+              "company" to cleanCompany,
+              "email" to cleanVisitorEmail,
+              "dob" to "",
+              "visitorType" to cleanReason,
+              "visitorJobProfile" to "",
+              "remark" to cleanRemark,
+              "visitCount" to nextVisitNumber,
+              "lastHostStaffId" to host.id,
+              "lastReason" to cleanReason,
+              "officeOwnerUid" to office.ownerUid,
+              "allowedReaderEmails" to profileReaders,
+              "createdAt" to FieldValue.serverTimestamp(),
+              "updatedAt" to FieldValue.serverTimestamp(),
+            ),
+          )
+        } else {
+          batch.update(
+            profileRef,
+            mapOf(
+              "mobile" to cleanMobile,
+              "name" to cleanName,
+              "company" to cleanCompany.ifBlank { existingProfile.company }.take(100),
+              "email" to cleanVisitorEmail.ifBlank { existingProfile.email }.take(120),
+              "dob" to existingProfile.dob.take(20),
+              "remark" to cleanRemark.ifBlank { existingProfile.remark }.take(300),
+              "visitCount" to nextVisitNumber,
+              "lastHostStaffId" to host.id,
+              "lastReason" to cleanReason,
+              "allowedReaderEmails" to profileReaders,
+              "updatedAt" to FieldValue.serverTimestamp(),
+            ),
+          )
+        }
+      }
+
+      val apptRef =
+        db.collection("offices").document(office.id).collection("appointments").document(appointment.id)
+      batch.update(
+        apptRef,
+        mapOf(
+          "status" to AppointmentStatus.CHECKED_IN.wireValue,
+          "updatedAt" to FieldValue.serverTimestamp(),
+        ),
+      )
+
+      batch.commit().await()
+      Result.success(visitId)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.WRITE, path)
+      Result.failure(e)
+    }
+  }
+
   suspend fun remindHost(officeId: String, visitId: String): Result<Unit> {
     val path = "offices/$officeId/visits/$visitId"
     return try {
@@ -1078,6 +1375,10 @@ class VisitorDeskRepository(
     currentReasons: List<VisitReason>,
     currentProfiles: List<VisitorProfile>,
     currentVisits: List<Visit>,
+    currentPrCampaigns: List<PRCampaign> = emptyList(),
+    currentPrContacts: List<PRContact> = emptyList(),
+    currentPrGifts: List<PRGift> = emptyList(),
+    currentAppointments: List<Appointment> = emptyList(),
     fullName: String,
     shownAs: String,
     email: String,
@@ -1188,6 +1489,10 @@ class VisitorDeskRepository(
         reasons = currentReasons,
         profiles = currentProfiles,
         visits = currentVisits,
+        prCampaigns = currentPrCampaigns,
+        prContacts = currentPrContacts,
+        prGifts = currentPrGifts,
+        appointments = currentAppointments,
         activeEmails = activeEmails,
         receptionAdminEmails = receptionAdminEmails,
         receptionEmails = lists.receptionEmails,
@@ -1212,6 +1517,10 @@ class VisitorDeskRepository(
     currentProfiles: List<VisitorProfile>,
     currentVisits: List<Visit>,
     edited: StaffMember,
+    currentPrCampaigns: List<PRCampaign> = emptyList(),
+    currentPrContacts: List<PRContact> = emptyList(),
+    currentPrGifts: List<PRGift> = emptyList(),
+    currentAppointments: List<Appointment> = emptyList(),
   ): Result<Unit> {
     val path = "offices/${office.id}/staff/${edited.id}"
     return try {
@@ -1296,6 +1605,10 @@ class VisitorDeskRepository(
         reasons = currentReasons,
         profiles = currentProfiles,
         visits = currentVisits,
+        prCampaigns = currentPrCampaigns,
+        prContacts = currentPrContacts,
+        prGifts = currentPrGifts,
+        appointments = currentAppointments,
         activeEmails = activeEmails,
         receptionAdminEmails = receptionAdminEmails,
         receptionEmails = lists.receptionEmails,
@@ -1421,12 +1734,578 @@ class VisitorDeskRepository(
     )
   }
 
+  // --- PR MODULE CRUD OPERATIONS ---
+
+  private fun buildPrReaders(office: Office, ownerEmail: String): List<String> {
+    val cleanOwner = ownerEmail.trim().lowercase()
+    return (office.receptionAdminEmails + cleanOwner)
+      .map { it.trim().lowercase() }
+      .filter { it.isNotBlank() }
+      .distinct()
+      .take(100)
+  }
+
+  suspend fun upsertPrCampaign(
+    office: Office,
+    existing: PRCampaign?,
+    campaign: PRCampaign,
+    isHostSelfEdit: Boolean,
+  ): Result<Unit> {
+    val campaignId =
+      existing?.id?.takeIf { it.isNotBlank() }
+        ?: "pr_camp_${UUID.randomUUID().toString().replace("-", "").take(12)}"
+    val path = "offices/${office.id}/prCampaigns/$campaignId"
+    return try {
+      val uid = requireUserId()
+      val email = requireVerifiedEmail()
+      val cleanTitle = campaign.title.trim().take(120)
+      require(cleanTitle.isNotEmpty()) { "Campaign title is required." }
+
+      val docRef = db.collection("offices").document(office.id).collection("prCampaigns").document(campaignId)
+      if (existing == null) {
+        val cleanOwnerEmail =
+          if (isHostSelfEdit) email else campaign.ownerEmail.trim().lowercase().take(120)
+        val payload = mapOf(
+          "title" to cleanTitle,
+          "channel" to campaign.parsedChannel().wireValue,
+          "status" to campaign.parsedStatus().wireValue,
+          "targetDateLabel" to campaign.targetDateLabel.trim().take(40),
+          "location" to campaign.location.trim().take(120),
+          "audienceSummary" to campaign.audienceSummary.trim().take(160),
+          "notes" to campaign.notes.trim().take(300),
+          "ownerStaffId" to campaign.ownerStaffId.trim().take(64),
+          "ownerName" to campaign.ownerName.trim().take(80),
+          "ownerEmail" to cleanOwnerEmail,
+          "createdByUid" to uid,
+          "createdByEmail" to email,
+          "officeOwnerUid" to office.ownerUid,
+          "allowedReaderEmails" to buildPrReaders(office, cleanOwnerEmail),
+          "createdAt" to FieldValue.serverTimestamp(),
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+        docRef.set(payload).await()
+      } else {
+        val updateMap = mutableMapOf<String, Any>(
+          "title" to cleanTitle,
+          "channel" to campaign.parsedChannel().wireValue,
+          "status" to campaign.parsedStatus().wireValue,
+          "targetDateLabel" to campaign.targetDateLabel.trim().take(40),
+          "location" to campaign.location.trim().take(120),
+          "audienceSummary" to campaign.audienceSummary.trim().take(160),
+          "notes" to campaign.notes.trim().take(300),
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+        if (!isHostSelfEdit) {
+          val cleanOwnerEmail = campaign.ownerEmail.trim().lowercase().take(120)
+          updateMap["ownerStaffId"] = campaign.ownerStaffId.trim().take(64)
+          updateMap["ownerName"] = campaign.ownerName.trim().take(80)
+          updateMap["ownerEmail"] = cleanOwnerEmail
+          updateMap["allowedReaderEmails"] = buildPrReaders(office, cleanOwnerEmail)
+        }
+        docRef.update(updateMap).await()
+      }
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, if (existing == null) OperationType.CREATE else OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun updatePrCampaignStatus(
+    officeId: String,
+    campaignId: String,
+    status: PRCampaignStatus,
+  ): Result<Unit> {
+    val path = "offices/$officeId/prCampaigns/$campaignId"
+    return try {
+      requireUserId()
+      require(campaignId.isNotBlank()) { "Campaign ID is required." }
+      db.collection("offices")
+        .document(officeId)
+        .collection("prCampaigns")
+        .document(campaignId)
+        .update(
+          mapOf(
+            "status" to status.wireValue,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun deletePrCampaign(officeId: String, campaignId: String): Result<Unit> {
+    val path = "offices/$officeId/prCampaigns/$campaignId"
+    return try {
+      requireUserId()
+      require(campaignId.isNotBlank()) { "Campaign ID is required." }
+      db.collection("offices")
+        .document(officeId)
+        .collection("prCampaigns")
+        .document(campaignId)
+        .delete()
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.DELETE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun upsertPrContact(
+    office: Office,
+    existing: PRContact?,
+    contact: PRContact,
+    isHostSelfEdit: Boolean,
+  ): Result<Unit> {
+    val contactId =
+      existing?.id?.takeIf { it.isNotBlank() }
+        ?: "pr_contact_${UUID.randomUUID().toString().replace("-", "").take(12)}"
+    val path = "offices/${office.id}/prContacts/$contactId"
+    return try {
+      val uid = requireUserId()
+      val email = requireVerifiedEmail()
+      val cleanName = contact.name.trim().take(100)
+      require(cleanName.isNotEmpty()) { "Contact name is required." }
+
+      val docRef = db.collection("offices").document(office.id).collection("prContacts").document(contactId)
+      val cleanPhotoUrl = contact.photoUrl.trim().take(StaffPhotoCodec.MAX_PHOTO_DATA_URI_CHARS)
+      val cleanDob = contact.dob.trim().take(30)
+      val cleanAnniv = contact.anniversaryDate.trim().take(30)
+      val cleanGiftPref = contact.specialGiftPreference.trim().take(160)
+      val cleanCity = contact.cityOrAddress.trim().take(160)
+      val cleanWishedYear = contact.lastWishedYear.coerceIn(0L, 2999L)
+      if (existing == null) {
+        val cleanOwnerEmail =
+          if (isHostSelfEdit) email else contact.ownerEmail.trim().lowercase().take(120)
+        val payload = mapOf(
+          "name" to cleanName,
+          "organization" to contact.organization.trim().take(100),
+          "designation" to contact.designation.trim().take(80),
+          "tier" to contact.parsedTier().wireValue,
+          "mobile" to contact.mobile.trim().take(20),
+          "email" to contact.email.trim().lowercase().take(120),
+          "followUpStatus" to contact.parsedFollowUpStatus().wireValue,
+          "nextFollowUpDate" to contact.nextFollowUpDate.trim().take(40),
+          "photoUrl" to cleanPhotoUrl,
+          "dob" to cleanDob,
+          "anniversaryDate" to cleanAnniv,
+          "lastWishedYear" to cleanWishedYear,
+          "specialGiftPreference" to cleanGiftPref,
+          "cityOrAddress" to cleanCity,
+          "notes" to contact.notes.trim().take(300),
+          "ownerStaffId" to contact.ownerStaffId.trim().take(64),
+          "ownerName" to contact.ownerName.trim().take(80),
+          "ownerEmail" to cleanOwnerEmail,
+          "createdByUid" to uid,
+          "createdByEmail" to email,
+          "officeOwnerUid" to office.ownerUid,
+          "allowedReaderEmails" to buildPrReaders(office, cleanOwnerEmail),
+          "createdAt" to FieldValue.serverTimestamp(),
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+        docRef.set(payload).await()
+      } else {
+        val updateMap = mutableMapOf<String, Any>(
+          "name" to cleanName,
+          "organization" to contact.organization.trim().take(100),
+          "designation" to contact.designation.trim().take(80),
+          "tier" to contact.parsedTier().wireValue,
+          "mobile" to contact.mobile.trim().take(20),
+          "email" to contact.email.trim().lowercase().take(120),
+          "followUpStatus" to contact.parsedFollowUpStatus().wireValue,
+          "nextFollowUpDate" to contact.nextFollowUpDate.trim().take(40),
+          "photoUrl" to cleanPhotoUrl,
+          "dob" to cleanDob,
+          "anniversaryDate" to cleanAnniv,
+          "lastWishedYear" to cleanWishedYear,
+          "specialGiftPreference" to cleanGiftPref,
+          "cityOrAddress" to cleanCity,
+          "notes" to contact.notes.trim().take(300),
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+        if (!isHostSelfEdit) {
+          val cleanOwnerEmail = contact.ownerEmail.trim().lowercase().take(120)
+          updateMap["ownerStaffId"] = contact.ownerStaffId.trim().take(64)
+          updateMap["ownerName"] = contact.ownerName.trim().take(80)
+          updateMap["ownerEmail"] = cleanOwnerEmail
+          updateMap["allowedReaderEmails"] = buildPrReaders(office, cleanOwnerEmail)
+        }
+        docRef.update(updateMap).await()
+      }
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, if (existing == null) OperationType.CREATE else OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun markPrContactWished(
+    officeId: String,
+    contactId: String,
+    year: Int,
+  ): Result<Unit> {
+    val path = "offices/$officeId/prContacts/$contactId"
+    return try {
+      requireUserId()
+      require(contactId.isNotBlank()) { "Contact ID is required." }
+      db.collection("offices")
+        .document(officeId)
+        .collection("prContacts")
+        .document(contactId)
+        .update(
+          mapOf(
+            "lastWishedYear" to year.toLong().coerceIn(0L, 2999L),
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun updatePrContactFollowUp(
+    officeId: String,
+    contactId: String,
+    status: PRFollowUpStatus,
+    nextFollowUpDate: String? = null,
+  ): Result<Unit> {
+    val path = "offices/$officeId/prContacts/$contactId"
+    return try {
+      requireUserId()
+      require(contactId.isNotBlank()) { "Contact ID is required." }
+      val updates = mutableMapOf<String, Any>(
+        "followUpStatus" to status.wireValue,
+        "updatedAt" to FieldValue.serverTimestamp(),
+      )
+      if (nextFollowUpDate != null) {
+        updates["nextFollowUpDate"] = nextFollowUpDate.trim().take(40)
+      }
+      db.collection("offices")
+        .document(officeId)
+        .collection("prContacts")
+        .document(contactId)
+        .update(updates)
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun deletePrContact(officeId: String, contactId: String): Result<Unit> {
+    val path = "offices/$officeId/prContacts/$contactId"
+    return try {
+      requireUserId()
+      require(contactId.isNotBlank()) { "Contact ID is required." }
+      db.collection("offices")
+        .document(officeId)
+        .collection("prContacts")
+        .document(contactId)
+        .delete()
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.DELETE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun upsertPrGift(
+    office: Office,
+    existing: PRGift?,
+    gift: PRGift,
+    isHostSelfEdit: Boolean,
+  ): Result<Unit> {
+    val giftId =
+      existing?.id?.takeIf { it.isNotBlank() }
+        ?: "pr_gift_${UUID.randomUUID().toString().replace("-", "").take(12)}"
+    val path = "offices/${office.id}/prGifts/$giftId"
+    return try {
+      val uid = requireUserId()
+      val email = requireVerifiedEmail()
+      val cleanRecipient = gift.recipientOrSender.trim().take(100)
+      val cleanItem = gift.itemTitle.trim().take(120)
+      require(cleanRecipient.isNotEmpty() && cleanItem.isNotEmpty()) {
+        "Recipient/sender and item title are required."
+      }
+
+      val docRef = db.collection("offices").document(office.id).collection("prGifts").document(giftId)
+      if (existing == null) {
+        val cleanOwnerEmail =
+          if (isHostSelfEdit) email else gift.ownerEmail.trim().lowercase().take(120)
+        val payload = mapOf(
+          "recipientOrSender" to cleanRecipient,
+          "company" to gift.company.trim().take(100),
+          "itemTitle" to cleanItem,
+          "direction" to gift.parsedDirection().wireValue,
+          "status" to gift.parsedStatus().wireValue,
+          "occasion" to gift.occasion.trim().take(60),
+          "dateLabel" to gift.dateLabel.trim().take(40),
+          "notes" to gift.notes.trim().take(300),
+          "ownerStaffId" to gift.ownerStaffId.trim().take(64),
+          "ownerName" to gift.ownerName.trim().take(80),
+          "ownerEmail" to cleanOwnerEmail,
+          "createdByUid" to uid,
+          "createdByEmail" to email,
+          "officeOwnerUid" to office.ownerUid,
+          "allowedReaderEmails" to buildPrReaders(office, cleanOwnerEmail),
+          "createdAt" to FieldValue.serverTimestamp(),
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+        docRef.set(payload).await()
+      } else {
+        val updateMap = mutableMapOf<String, Any>(
+          "recipientOrSender" to cleanRecipient,
+          "company" to gift.company.trim().take(100),
+          "itemTitle" to cleanItem,
+          "direction" to gift.parsedDirection().wireValue,
+          "status" to gift.parsedStatus().wireValue,
+          "occasion" to gift.occasion.trim().take(60),
+          "dateLabel" to gift.dateLabel.trim().take(40),
+          "notes" to gift.notes.trim().take(300),
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+        if (!isHostSelfEdit) {
+          val cleanOwnerEmail = gift.ownerEmail.trim().lowercase().take(120)
+          updateMap["ownerStaffId"] = gift.ownerStaffId.trim().take(64)
+          updateMap["ownerName"] = gift.ownerName.trim().take(80)
+          updateMap["ownerEmail"] = cleanOwnerEmail
+          updateMap["allowedReaderEmails"] = buildPrReaders(office, cleanOwnerEmail)
+        }
+        docRef.update(updateMap).await()
+      }
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, if (existing == null) OperationType.CREATE else OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun updatePrGiftStatus(
+    officeId: String,
+    giftId: String,
+    status: PRGiftStatus,
+  ): Result<Unit> {
+    val path = "offices/$officeId/prGifts/$giftId"
+    return try {
+      requireUserId()
+      require(giftId.isNotBlank()) { "Gift ID is required." }
+      db.collection("offices")
+        .document(officeId)
+        .collection("prGifts")
+        .document(giftId)
+        .update(
+          mapOf(
+            "status" to status.wireValue,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun deletePrGift(officeId: String, giftId: String): Result<Unit> {
+    val path = "offices/$officeId/prGifts/$giftId"
+    return try {
+      requireUserId()
+      require(giftId.isNotBlank()) { "Gift ID is required." }
+      db.collection("offices")
+        .document(officeId)
+        .collection("prGifts")
+        .document(giftId)
+        .delete()
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.DELETE, path)
+      Result.failure(e)
+    }
+  }
+
+  // --- APPOINTMENT BOOKING CRUD ---
+
+  suspend fun upsertAppointment(
+    office: Office,
+    existing: Appointment?,
+    appointment: Appointment,
+    isHostSelfEdit: Boolean,
+  ): Result<Unit> {
+    val apptId =
+      existing?.id?.takeIf { it.isNotBlank() }
+        ?: "appt_${UUID.randomUUID().toString().replace("-", "").take(12)}"
+    val path = "offices/${office.id}/appointments/$apptId"
+    return try {
+      val uid = requireUserId()
+      val email = requireVerifiedEmail()
+      val cleanVisitorName = appointment.visitorName.trim().take(100)
+      val cleanPurpose = appointment.purpose.trim().take(60).ifBlank { "Meeting" }
+      val cleanDateIso = appointment.scheduledDateIso.trim().take(20)
+      val cleanTimeLabel = appointment.scheduledTimeLabel.trim().take(24)
+      require(cleanVisitorName.isNotEmpty()) { "Visitor name is required." }
+      require(cleanDateIso.isNotEmpty() && cleanTimeLabel.isNotEmpty()) { "Date and time are required." }
+      require(appointment.hostStaffId.isNotBlank() && appointment.hostShownAs.isNotBlank()) {
+        "Assigned host is required."
+      }
+
+      val scheduledMs =
+        appointment.scheduledAtMillis.takeIf { it > 0L }
+          ?: DeskFormatters.parseScheduledMillis(cleanDateIso, cleanTimeLabel)
+
+      val docRef = db.collection("offices").document(office.id).collection("appointments").document(apptId)
+      if (existing == null) {
+        val cleanHostEmail =
+          if (isHostSelfEdit) email else appointment.hostEmail.trim().lowercase().take(120)
+        val payload = mapOf(
+          "visitorName" to cleanVisitorName,
+          "visitorMobile" to appointment.visitorMobile.trim().take(20),
+          "visitorCompany" to appointment.visitorCompany.trim().take(100),
+          "visitorEmail" to appointment.visitorEmail.trim().lowercase().take(120),
+          "purpose" to cleanPurpose,
+          "location" to appointment.location.trim().take(120),
+          "scheduledDateIso" to cleanDateIso,
+          "scheduledTimeLabel" to cleanTimeLabel,
+          "scheduledAtMillis" to scheduledMs.coerceAtLeast(0L),
+          "notes" to appointment.notes.trim().take(300),
+          "hostStaffId" to appointment.hostStaffId.trim().take(64),
+          "hostShownAs" to appointment.hostShownAs.trim().take(60),
+          "hostEmail" to cleanHostEmail,
+          "hostCabin" to appointment.hostCabin.trim().take(100),
+          "status" to AppointmentStatus.SCHEDULED.wireValue,
+          "bookedByRole" to appointment.bookedByRole.trim().take(30),
+          "createdByUid" to uid,
+          "createdByEmail" to email,
+          "officeOwnerUid" to office.ownerUid,
+          "allowedReaderEmails" to buildPrReaders(office, cleanHostEmail),
+          "createdAt" to FieldValue.serverTimestamp(),
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+        docRef.set(payload).await()
+      } else {
+        val updateMap = mutableMapOf<String, Any>(
+          "visitorName" to cleanVisitorName,
+          "visitorMobile" to appointment.visitorMobile.trim().take(20),
+          "visitorCompany" to appointment.visitorCompany.trim().take(100),
+          "visitorEmail" to appointment.visitorEmail.trim().lowercase().take(120),
+          "purpose" to cleanPurpose,
+          "location" to appointment.location.trim().take(120),
+          "scheduledDateIso" to cleanDateIso,
+          "scheduledTimeLabel" to cleanTimeLabel,
+          "scheduledAtMillis" to scheduledMs.coerceAtLeast(0L),
+          "notes" to appointment.notes.trim().take(300),
+          "status" to appointment.parsedStatus().wireValue,
+          "updatedAt" to FieldValue.serverTimestamp(),
+        )
+        if (!isHostSelfEdit) {
+          val cleanHostEmail = appointment.hostEmail.trim().lowercase().take(120)
+          updateMap["hostStaffId"] = appointment.hostStaffId.trim().take(64)
+          updateMap["hostShownAs"] = appointment.hostShownAs.trim().take(60)
+          updateMap["hostEmail"] = cleanHostEmail
+          updateMap["hostCabin"] = appointment.hostCabin.trim().take(100)
+          updateMap["allowedReaderEmails"] = buildPrReaders(office, cleanHostEmail)
+        }
+        docRef.update(updateMap).await()
+      }
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, if (existing == null) OperationType.CREATE else OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun updateAppointmentStatus(
+    officeId: String,
+    appointmentId: String,
+    status: AppointmentStatus,
+  ): Result<Unit> {
+    val path = "offices/$officeId/appointments/$appointmentId"
+    return try {
+      requireUserId()
+      require(appointmentId.isNotBlank()) { "Appointment ID is required." }
+      db.collection("offices")
+        .document(officeId)
+        .collection("appointments")
+        .document(appointmentId)
+        .update(
+          mapOf(
+            "status" to status.wireValue,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun deleteAppointment(officeId: String, appointmentId: String): Result<Unit> {
+    val path = "offices/$officeId/appointments/$appointmentId"
+    return try {
+      requireUserId()
+      require(appointmentId.isNotBlank()) { "Appointment ID is required." }
+      db.collection("offices")
+        .document(officeId)
+        .collection("appointments")
+        .document(appointmentId)
+        .delete()
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.DELETE, path)
+      Result.failure(e)
+    }
+  }
+
   private fun syncOfficeAccessControl(
     office: Office,
     staffList: List<StaffMember>,
     reasons: List<VisitReason>,
     profiles: List<VisitorProfile>,
     visits: List<Visit>,
+    prCampaigns: List<PRCampaign> = emptyList(),
+    prContacts: List<PRContact> = emptyList(),
+    prGifts: List<PRGift> = emptyList(),
+    appointments: List<Appointment> = emptyList(),
     activeEmails: List<String>,
     receptionAdminEmails: List<String>,
     receptionEmails: List<String>,
@@ -1491,6 +2370,78 @@ class VisitorDeskRepository(
         queue.enqueue { batch ->
           batch.update(
             officeRef.collection("visits").document(visit.id),
+            mapOf("allowedReaderEmails" to readers, "updatedAt" to FieldValue.serverTimestamp()),
+          )
+        }
+      }
+    }
+
+    prCampaigns.forEach { campaign ->
+      if (campaign.id.isNotBlank()) {
+        val cleanOwnerEmail = campaign.ownerEmail.trim().lowercase()
+        val readers =
+          (if (cleanOwnerEmail.isNotBlank() && cleanOwnerEmail in activeEmails) {
+            receptionAdminEmails + cleanOwnerEmail
+          } else {
+            receptionAdminEmails
+          }).distinct().take(100)
+        queue.enqueue { batch ->
+          batch.update(
+            officeRef.collection("prCampaigns").document(campaign.id),
+            mapOf("allowedReaderEmails" to readers, "updatedAt" to FieldValue.serverTimestamp()),
+          )
+        }
+      }
+    }
+
+    prContacts.forEach { contact ->
+      if (contact.id.isNotBlank()) {
+        val cleanOwnerEmail = contact.ownerEmail.trim().lowercase()
+        val readers =
+          (if (cleanOwnerEmail.isNotBlank() && cleanOwnerEmail in activeEmails) {
+            receptionAdminEmails + cleanOwnerEmail
+          } else {
+            receptionAdminEmails
+          }).distinct().take(100)
+        queue.enqueue { batch ->
+          batch.update(
+            officeRef.collection("prContacts").document(contact.id),
+            mapOf("allowedReaderEmails" to readers, "updatedAt" to FieldValue.serverTimestamp()),
+          )
+        }
+      }
+    }
+
+    prGifts.forEach { gift ->
+      if (gift.id.isNotBlank()) {
+        val cleanOwnerEmail = gift.ownerEmail.trim().lowercase()
+        val readers =
+          (if (cleanOwnerEmail.isNotBlank() && cleanOwnerEmail in activeEmails) {
+            receptionAdminEmails + cleanOwnerEmail
+          } else {
+            receptionAdminEmails
+          }).distinct().take(100)
+        queue.enqueue { batch ->
+          batch.update(
+            officeRef.collection("prGifts").document(gift.id),
+            mapOf("allowedReaderEmails" to readers, "updatedAt" to FieldValue.serverTimestamp()),
+          )
+        }
+      }
+    }
+
+    appointments.forEach { appt ->
+      if (appt.id.isNotBlank()) {
+        val cleanHostEmail = appt.hostEmail.trim().lowercase()
+        val readers =
+          (if (cleanHostEmail.isNotBlank() && cleanHostEmail in activeEmails) {
+            receptionAdminEmails + cleanHostEmail
+          } else {
+            receptionAdminEmails
+          }).distinct().take(100)
+        queue.enqueue { batch ->
+          batch.update(
+            officeRef.collection("appointments").document(appt.id),
             mapOf("allowedReaderEmails" to readers, "updatedAt" to FieldValue.serverTimestamp()),
           )
         }

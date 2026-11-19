@@ -224,6 +224,85 @@ service cloud.firestore {
              data.createdAt is timestamp && data.createdAt <= request.time;
     }
 
+    function isValidPrOwnership(data) {
+      return data.ownerStaffId is string && data.ownerStaffId.size() <= 64 &&
+             data.ownerName is string && data.ownerName.size() <= 80 &&
+             data.ownerEmail is string && data.ownerEmail.size() <= 120 &&
+             data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128 &&
+             data.createdByEmail is string && data.createdByEmail.size() <= 120 &&
+             data.officeOwnerUid is string && data.officeOwnerUid.size() >= 1 && data.officeOwnerUid.size() <= 128 &&
+             isValidBoundedEmailList(data.allowedReaderEmails) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidPrCampaign(data) {
+      return data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.channel in ['Press / Media', 'Event', 'Social & Digital', 'VIP Outreach', 'Festive Gifting'] &&
+             data.status in ['Planned', 'Active', 'Live', 'Completed'] &&
+             data.targetDateLabel is string && data.targetDateLabel.size() <= 40 &&
+             data.location is string && data.location.size() <= 120 &&
+             data.audienceSummary is string && data.audienceSummary.size() <= 160 &&
+             data.notes is string && data.notes.size() <= 300 &&
+             isValidPrOwnership(data);
+    }
+
+    function isValidPrContact(data) {
+      return data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.organization is string && data.organization.size() <= 100 &&
+             data.designation is string && data.designation.size() <= 80 &&
+             data.tier in ['VIP', 'Media', 'Partner'] &&
+             data.mobile is string && data.mobile.size() <= 20 &&
+             data.email is string && data.email.size() <= 120 &&
+             data.followUpStatus in ['Warm', 'Follow-up Due', 'Scheduled', 'Connected'] &&
+             data.nextFollowUpDate is string && data.nextFollowUpDate.size() <= 40 &&
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 120000)) &&
+             (!('dob' in data) || (data.dob is string && data.dob.size() <= 30)) &&
+             (!('anniversaryDate' in data) || (data.anniversaryDate is string && data.anniversaryDate.size() <= 30)) &&
+             (!('lastWishedYear' in data) || (data.lastWishedYear is int && data.lastWishedYear >= 0 && data.lastWishedYear <= 2999)) &&
+             (!('specialGiftPreference' in data) || (data.specialGiftPreference is string && data.specialGiftPreference.size() <= 160)) &&
+             (!('cityOrAddress' in data) || (data.cityOrAddress is string && data.cityOrAddress.size() <= 160)) &&
+             data.notes is string && data.notes.size() <= 300 &&
+             isValidPrOwnership(data);
+    }
+
+    function isValidPrGift(data) {
+      return data.recipientOrSender is string && data.recipientOrSender.size() >= 1 && data.recipientOrSender.size() <= 100 &&
+             data.company is string && data.company.size() <= 100 &&
+             data.itemTitle is string && data.itemTitle.size() >= 1 && data.itemTitle.size() <= 120 &&
+             data.direction in ['Sent', 'Received'] &&
+             data.status in ['Prepared', 'Dispatched', 'Delivered', 'Acknowledged'] &&
+             data.occasion is string && data.occasion.size() <= 60 &&
+             data.dateLabel is string && data.dateLabel.size() <= 40 &&
+             data.notes is string && data.notes.size() <= 300 &&
+             isValidPrOwnership(data);
+    }
+
+    function isValidAppointment(data) {
+      return data.visitorName is string && data.visitorName.size() >= 1 && data.visitorName.size() <= 100 &&
+             data.visitorMobile is string && data.visitorMobile.size() <= 20 &&
+             data.visitorCompany is string && data.visitorCompany.size() <= 100 &&
+             data.visitorEmail is string && data.visitorEmail.size() <= 120 &&
+             data.purpose is string && data.purpose.size() >= 1 && data.purpose.size() <= 60 &&
+             data.location is string && data.location.size() <= 120 &&
+             data.scheduledDateIso is string && data.scheduledDateIso.size() >= 1 && data.scheduledDateIso.size() <= 20 &&
+             data.scheduledTimeLabel is string && data.scheduledTimeLabel.size() >= 1 && data.scheduledTimeLabel.size() <= 24 &&
+             data.scheduledAtMillis is int && data.scheduledAtMillis >= 0 &&
+             data.notes is string && data.notes.size() <= 300 &&
+             data.hostStaffId is string && data.hostStaffId.size() >= 1 && data.hostStaffId.size() <= 64 &&
+             data.hostShownAs is string && data.hostShownAs.size() >= 1 && data.hostShownAs.size() <= 60 &&
+             data.hostEmail is string && data.hostEmail.size() <= 120 &&
+             data.hostCabin is string && data.hostCabin.size() <= 100 &&
+             data.status in ['Scheduled', 'Checked in', 'Completed', 'Cancelled'] &&
+             data.bookedByRole is string && data.bookedByRole.size() <= 30 &&
+             data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128 &&
+             data.createdByEmail is string && data.createdByEmail.size() <= 120 &&
+             data.officeOwnerUid is string && data.officeOwnerUid.size() >= 1 && data.officeOwnerUid.size() <= 128 &&
+             isValidBoundedEmailList(data.allowedReaderEmails) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
     // --- COLLECTION RULES ---
 
     match /officeMemberships/{membershipId} {
@@ -307,7 +386,7 @@ service cloud.firestore {
             (existing().email == verifiedEmail() &&
              existing().activeAccount == true &&
              (incoming().uid == request.auth.uid || existing().uid == request.auth.uid) &&
-             incoming().diff(existing()).affectedKeys().hasOnly(['uid', 'floor', 'cabin', 'otherLocation', 'requiredThings', 'notes', 'availabilityStatus', 'updatedAt']))
+             incoming().diff(existing()).affectedKeys().hasOnly(['uid', 'fullName', 'shownAs', 'designation', 'department', 'photoUrl', 'floor', 'cabin', 'otherLocation', 'requiredThings', 'notes', 'availabilityStatus', 'updatedAt']))
           );
         allow delete: if isVerifiedSignedIn() && isValidId(staffId) && isOfficeAdmin(officeId);
       }
@@ -404,6 +483,151 @@ service cloud.firestore {
           incoming().keys().hasAll(['visitorMobile', 'dob', 'recordedByUid', 'createdAt']) &&
           incoming().keys().hasOnly(['visitorMobile', 'dob', 'recordedByUid', 'createdAt']) &&
           isReception(officeId);
+      }
+
+      match /prCampaigns/{campaignId} {
+        allow list: if isVerifiedSignedIn() && (
+          (isReceptionOrAdmin(officeId) && verifiedEmail() in resource.data.allowedReaderEmails) ||
+          (resource.data.ownerEmail == verifiedEmail() && isActiveOfficeMember(officeId))
+        );
+        allow get: if isVerifiedSignedIn() && isValidId(campaignId) && isActiveOfficeMember(officeId) && (
+          (isReceptionOrAdmin(officeId) && verifiedEmail() in existing().allowedReaderEmails) ||
+          existing().ownerEmail == verifiedEmail()
+        );
+        allow create: if isVerifiedSignedIn() &&
+          isValidId(campaignId) &&
+          isValidPrCampaign(incoming()) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().createdByEmail == verifiedEmail() &&
+          incoming().keys().hasAll(['title', 'channel', 'status', 'targetDateLabel', 'location', 'audienceSummary', 'notes', 'ownerStaffId', 'ownerName', 'ownerEmail', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['title', 'channel', 'status', 'targetDateLabel', 'location', 'audienceSummary', 'notes', 'ownerStaffId', 'ownerName', 'ownerEmail', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) && (
+            isReceptionOrAdmin(officeId) ||
+            (isActiveOfficeMember(officeId) && incoming().ownerEmail == verifiedEmail())
+          );
+        allow update: if isVerifiedSignedIn() &&
+          isValidId(campaignId) &&
+          isValidPrCampaign(incoming()) &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdByEmail == existing().createdByEmail &&
+          incoming().officeOwnerUid == existing().officeOwnerUid && (
+            (isReceptionOrAdmin(officeId) &&
+             incoming().diff(existing()).affectedKeys().hasOnly(['title', 'channel', 'status', 'targetDateLabel', 'location', 'audienceSummary', 'notes', 'ownerStaffId', 'ownerName', 'ownerEmail', 'allowedReaderEmails', 'updatedAt'])) ||
+            (isActiveOfficeMember(officeId) &&
+             existing().ownerEmail == verifiedEmail() &&
+             incoming().ownerEmail == existing().ownerEmail &&
+             incoming().diff(existing()).affectedKeys().hasOnly(['title', 'channel', 'status', 'targetDateLabel', 'location', 'audienceSummary', 'notes', 'updatedAt']))
+          );
+        allow delete: if isVerifiedSignedIn() && isValidId(campaignId) && isOfficeAdmin(officeId);
+      }
+
+      match /prContacts/{contactId} {
+        allow list: if isVerifiedSignedIn() && (
+          (isReceptionOrAdmin(officeId) && verifiedEmail() in resource.data.allowedReaderEmails) ||
+          (resource.data.ownerEmail == verifiedEmail() && isActiveOfficeMember(officeId))
+        );
+        allow get: if isVerifiedSignedIn() && isValidId(contactId) && isActiveOfficeMember(officeId) && (
+          (isReceptionOrAdmin(officeId) && verifiedEmail() in existing().allowedReaderEmails) ||
+          existing().ownerEmail == verifiedEmail()
+        );
+        allow create: if isVerifiedSignedIn() &&
+          isValidId(contactId) &&
+          isValidPrContact(incoming()) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().createdByEmail == verifiedEmail() &&
+          incoming().keys().hasAll(['name', 'organization', 'designation', 'tier', 'mobile', 'email', 'followUpStatus', 'nextFollowUpDate', 'notes', 'ownerStaffId', 'ownerName', 'ownerEmail', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['name', 'organization', 'designation', 'tier', 'mobile', 'email', 'followUpStatus', 'nextFollowUpDate', 'photoUrl', 'dob', 'anniversaryDate', 'lastWishedYear', 'specialGiftPreference', 'cityOrAddress', 'notes', 'ownerStaffId', 'ownerName', 'ownerEmail', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) && (
+            isReceptionOrAdmin(officeId) ||
+            (isActiveOfficeMember(officeId) && incoming().ownerEmail == verifiedEmail())
+          );
+        allow update: if isVerifiedSignedIn() &&
+          isValidId(contactId) &&
+          isValidPrContact(incoming()) &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdByEmail == existing().createdByEmail &&
+          incoming().officeOwnerUid == existing().officeOwnerUid && (
+            (isReceptionOrAdmin(officeId) &&
+             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'organization', 'designation', 'tier', 'mobile', 'email', 'followUpStatus', 'nextFollowUpDate', 'photoUrl', 'dob', 'anniversaryDate', 'lastWishedYear', 'specialGiftPreference', 'cityOrAddress', 'notes', 'ownerStaffId', 'ownerName', 'ownerEmail', 'allowedReaderEmails', 'updatedAt'])) ||
+            (isActiveOfficeMember(officeId) &&
+             existing().ownerEmail == verifiedEmail() &&
+             incoming().ownerEmail == existing().ownerEmail &&
+             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'organization', 'designation', 'tier', 'mobile', 'email', 'followUpStatus', 'nextFollowUpDate', 'photoUrl', 'dob', 'anniversaryDate', 'lastWishedYear', 'specialGiftPreference', 'cityOrAddress', 'notes', 'updatedAt']))
+          );
+        allow delete: if isVerifiedSignedIn() && isValidId(contactId) && isOfficeAdmin(officeId);
+      }
+
+      match /prGifts/{giftId} {
+        allow list: if isVerifiedSignedIn() && (
+          (isReceptionOrAdmin(officeId) && verifiedEmail() in resource.data.allowedReaderEmails) ||
+          (resource.data.ownerEmail == verifiedEmail() && isActiveOfficeMember(officeId))
+        );
+        allow get: if isVerifiedSignedIn() && isValidId(giftId) && isActiveOfficeMember(officeId) && (
+          (isReceptionOrAdmin(officeId) && verifiedEmail() in existing().allowedReaderEmails) ||
+          existing().ownerEmail == verifiedEmail()
+        );
+        allow create: if isVerifiedSignedIn() &&
+          isValidId(giftId) &&
+          isValidPrGift(incoming()) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().createdByEmail == verifiedEmail() &&
+          incoming().keys().hasAll(['recipientOrSender', 'company', 'itemTitle', 'direction', 'status', 'occasion', 'dateLabel', 'notes', 'ownerStaffId', 'ownerName', 'ownerEmail', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['recipientOrSender', 'company', 'itemTitle', 'direction', 'status', 'occasion', 'dateLabel', 'notes', 'ownerStaffId', 'ownerName', 'ownerEmail', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) && (
+            isReceptionOrAdmin(officeId) ||
+            (isActiveOfficeMember(officeId) && incoming().ownerEmail == verifiedEmail())
+          );
+        allow update: if isVerifiedSignedIn() &&
+          isValidId(giftId) &&
+          isValidPrGift(incoming()) &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdByEmail == existing().createdByEmail &&
+          incoming().officeOwnerUid == existing().officeOwnerUid && (
+            (isReceptionOrAdmin(officeId) &&
+             incoming().diff(existing()).affectedKeys().hasOnly(['recipientOrSender', 'company', 'itemTitle', 'direction', 'status', 'occasion', 'dateLabel', 'notes', 'ownerStaffId', 'ownerName', 'ownerEmail', 'allowedReaderEmails', 'updatedAt'])) ||
+            (isActiveOfficeMember(officeId) &&
+             existing().ownerEmail == verifiedEmail() &&
+             incoming().ownerEmail == existing().ownerEmail &&
+             incoming().diff(existing()).affectedKeys().hasOnly(['recipientOrSender', 'company', 'itemTitle', 'direction', 'status', 'occasion', 'dateLabel', 'notes', 'updatedAt']))
+          );
+        allow delete: if isVerifiedSignedIn() && isValidId(giftId) && isOfficeAdmin(officeId);
+      }
+
+      match /appointments/{appointmentId} {
+        allow list: if isVerifiedSignedIn() && (
+          (isReceptionOrAdmin(officeId) && verifiedEmail() in resource.data.allowedReaderEmails) ||
+          (resource.data.hostEmail == verifiedEmail() && isActiveOfficeMember(officeId))
+        );
+        allow get: if isVerifiedSignedIn() && isValidId(appointmentId) && isActiveOfficeMember(officeId) && (
+          (isReceptionOrAdmin(officeId) && verifiedEmail() in existing().allowedReaderEmails) ||
+          existing().hostEmail == verifiedEmail()
+        );
+        allow create: if isVerifiedSignedIn() &&
+          isValidId(appointmentId) &&
+          isValidAppointment(incoming()) &&
+          incoming().status == 'Scheduled' &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().createdByEmail == verifiedEmail() &&
+          incoming().keys().hasAll(['visitorName', 'visitorMobile', 'visitorCompany', 'visitorEmail', 'purpose', 'location', 'scheduledDateIso', 'scheduledTimeLabel', 'scheduledAtMillis', 'notes', 'hostStaffId', 'hostShownAs', 'hostEmail', 'hostCabin', 'status', 'bookedByRole', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['visitorName', 'visitorMobile', 'visitorCompany', 'visitorEmail', 'purpose', 'location', 'scheduledDateIso', 'scheduledTimeLabel', 'scheduledAtMillis', 'notes', 'hostStaffId', 'hostShownAs', 'hostEmail', 'hostCabin', 'status', 'bookedByRole', 'createdByUid', 'createdByEmail', 'officeOwnerUid', 'allowedReaderEmails', 'createdAt', 'updatedAt']) && (
+            isReceptionOrAdmin(officeId) ||
+            (isActiveOfficeMember(officeId) && incoming().hostEmail == verifiedEmail())
+          );
+        allow update: if isVerifiedSignedIn() &&
+          isValidId(appointmentId) &&
+          isValidAppointment(incoming()) &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdByEmail == existing().createdByEmail &&
+          incoming().officeOwnerUid == existing().officeOwnerUid && (
+            (isReceptionOrAdmin(officeId) &&
+             incoming().diff(existing()).affectedKeys().hasOnly(['visitorName', 'visitorMobile', 'visitorCompany', 'visitorEmail', 'purpose', 'location', 'scheduledDateIso', 'scheduledTimeLabel', 'scheduledAtMillis', 'notes', 'hostStaffId', 'hostShownAs', 'hostEmail', 'hostCabin', 'status', 'allowedReaderEmails', 'updatedAt'])) ||
+            (isActiveOfficeMember(officeId) &&
+             existing().hostEmail == verifiedEmail() &&
+             incoming().hostEmail == existing().hostEmail &&
+             incoming().diff(existing()).affectedKeys().hasOnly(['visitorName', 'visitorMobile', 'visitorCompany', 'visitorEmail', 'purpose', 'location', 'scheduledDateIso', 'scheduledTimeLabel', 'scheduledAtMillis', 'notes', 'status', 'updatedAt']))
+          );
+        allow delete: if isVerifiedSignedIn() && isValidId(appointmentId) && isOfficeAdmin(officeId);
       }
     }
   }
